@@ -1,9 +1,33 @@
 #!/bin/bash
-set -euo pipefail
+set -eEuo pipefail
 
-# ======== LOGGING ========
 LOG_FILE="/var/log/bbb_greenlight_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ======== ROLLBACK FUNCTION ========
+rollback() {
+    echo "⚠️  A failure was detected during installation."
+    echo "Do you want to run the rollback procedure? (y/n)"
+    read -r CONFIRM
+    if [[ "$CONFIRM" == "y" || "$CONFIRM" == "Y" ]]; then
+        echo "[!] Rolling back installation..."
+        sudo systemctl stop greenlight.service || true
+        sudo systemctl disable greenlight.service || true
+        sudo rm -f /etc/systemd/system/greenlight.service
+        sudo systemctl daemon-reload
+
+        sudo rm -rf /var/www/greenlight
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;" || true
+        sudo -u postgres psql -c "DROP USER IF EXISTS greenlight;" || true
+
+        echo "[✔] Rollback complete. System returned to pre-install state."
+    else
+        echo "[!] Rollback skipped. Manual cleanup may be required."
+    fi
+}
+
+# ======== TRAP FATAL ERRORS ========
+trap rollback ERR
 
 # ======== USER INPUT ========
 read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
@@ -151,14 +175,11 @@ sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 echo "[14] Creating automatic maintenance script..."
 cat > /usr/local/bin/bbb_maintenance.sh <<'MAINTENANCE'
 #!/bin/bash
-set -euo pipefail
+set -e
 
-DOMAIN="{{DOMAIN}}"
-GREENLIGHT_DIR="{{GREENLIGHT_DIR}}"
-EMAIL="{{EMAIL}}"
-
-LOG_FILE="/var/log/bbb_maintenance.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+DOMAIN="'$DOMAIN'"
+GREENLIGHT_DIR="'$GREENLIGHT_DIR'"
+EMAIL="'$EMAIL'"
 
 echo "===== Running BBB + Greenlight Maintenance ====="
 
@@ -181,11 +202,6 @@ sudo systemctl reload nginx
 bbb-conf --check
 MAINTENANCE
 
-# Replace placeholders with actual values
-sudo sed -i "s|{{DOMAIN}}|$DOMAIN|g" /usr/local/bin/bbb_maintenance.sh
-sudo sed -i "s|{{GREENLIGHT_DIR}}|$GREENLIGHT_DIR|g" /usr/local/bin/bbb_maintenance.sh
-sudo sed -i "s|{{EMAIL}}|$EMAIL|g" /usr/local/bin/bbb_maintenance.sh
-
 sudo chmod +x /usr/local/bin/bbb_maintenance.sh
 
 # ======== SETUP WEEKLY CRON FOR MAINTENANCE ========
@@ -196,25 +212,8 @@ echo "[15] Setting up weekly cron job for automatic maintenance..."
 echo "[16] Running final BBB check..."
 bbb-conf --check
 
-# ======== LOGROTATE CONFIG ========
-echo "[17] Setting up log rotation..."
-sudo tee /etc/logrotate.d/bbb_greenlight > /dev/null <<'EOL'
-/var/log/bbb_greenlight_install.log /var/log/bbb_maintenance.log {
-    weekly
-    rotate 8
-    compress
-    missingok
-    notifempty
-    create 644 root root
-    postrotate
-        systemctl reload nginx >/dev/null 2>&1 || true
-    endscript
-}
-EOL
-sudo logrotate -f /etc/logrotate.d/bbb_greenlight || true
-
 echo "===== Installation Complete! ====="
 echo "Greenlight URL: https://$DOMAIN"
 echo "Greenlight systemd service: systemctl status greenlight.service"
-echo "Maintenance script: /usr/local/bin/bbb_maintenance.sh"
-echo "Logs: $LOG_FILE and /var/log/bbb_maintenance.log"
+echo "Maintenance script runs every Sunday at 3 AM."
+echo "Full installation log: $LOG_FILE"
