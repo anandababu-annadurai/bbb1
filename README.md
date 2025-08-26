@@ -1,3 +1,6 @@
+sudo yum update -y
+sudo yum install git -y
+
 
 SSH into your Ubuntu instance:
 
