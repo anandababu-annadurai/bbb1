@@ -4,8 +4,8 @@ sudo apt install git curl -y
 
 Clone the repo:
 
-git clone https://github.com/yourusername/yourrepo.git
-cd yourrepo
+git clone https://github.com/anandababu-annadurai/bbb1.git
+cd bbb1
 
 
 Make it executable:
