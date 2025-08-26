@@ -11,8 +11,8 @@ echo "===== Starting BBB + Greenlight Full Installation ====="
 
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
-apt update && apt upgrade -y
-apt install -y software-properties-common curl git gnupg2 build-essential zlib1g-dev lsb-release ufw
+yum update && yum upgrade -y
+yum install -y software-properties-common curl git gnupg2 build-essential zlib1g-dev lsb-release ufw
 
 # ======== HOSTNAME ========
 echo "[2] Setting hostname..."
@@ -22,16 +22,16 @@ echo "127.0.0.1 $DOMAIN" >> /etc/hosts
 # ======== INSTALL BIGBLUEBUTTON ========
 echo "[3] Installing BigBlueButton..."
 add-apt-repository ppa:bigbluebutton/support -y
-apt update
-apt install -y bigbluebutton
+yum update
+yum install -y bigbluebutton
 
 # ======== INSTALL DEPENDENCIES ========
 echo "[4] Installing Nginx, PostgreSQL, Node.js, Yarn, Ruby..."
-apt install -y nginx postgresql postgresql-contrib ruby-full nodejs
+yum install -y nginx postgresql postgresql-contrib ruby-full nodejs
 curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
 echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
-apt update
-apt install -y yarn
+yum update
+yum install -y yarn
 
 # ======== INSTALL GREENLIGHT ========
 echo "[5] Installing Greenlight..."
@@ -114,7 +114,7 @@ systemctl start greenlight.service
 
 # ======== SSL WITH CERTBOT ========
 echo "[11] Installing Certbot and enabling SSL..."
-apt install -y certbot python3-certbot-nginx
+yum install -y certbot python3-certbot-nginx
 certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # ======== CREATE AUTOMATIC MAINTENANCE SCRIPT ========
@@ -129,10 +129,10 @@ EMAIL="your-email@example.com"
 echo "===== Running BBB + Greenlight Maintenance ====="
 
 # Update system packages
-apt update && apt upgrade -y
+yum update && yum upgrade -y
 
 # Update BBB
-apt install --only-upgrade -y bigbluebutton
+yum install --only-upgrade -y bigbluebutton
 
 # Update Greenlight
 if [ -d "$GREENLIGHT_DIR" ]; then
