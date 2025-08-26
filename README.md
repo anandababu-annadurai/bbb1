@@ -1,10 +1,5 @@
-sudo yum update -y
-sudo yum install git -y
-
-
-SSH into your Ubuntu instance:
-
-ssh ubuntu@<YOUR_INSTANCE_IP>
+sudo apt update && sudo apt upgrade -y
+sudo apt install git curl -y
 
 
 Clone the repo:
