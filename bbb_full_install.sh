@@ -14,34 +14,34 @@ echo "Email: $EMAIL"
 
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
-apt update && apt upgrade -y
-apt install -y software-properties-common curl git gnupg2 build-essential zlib1g-dev lsb-release ufw
+sudo apt update -y && sudo apt upgrade -y
+sudo apt install -y software-properties-common curl git gnupg2 build-essential zlib1g-dev lsb-release ufw
 
 # ======== HOSTNAME ========
 echo "[2] Setting hostname..."
-hostnamectl set-hostname $DOMAIN
-echo "127.0.0.1 $DOMAIN" >> /etc/hosts
+sudo hostnamectl set-hostname $DOMAIN
+echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 
 # ======== INSTALL BIGBLUEBUTTON ========
-echo "[3] Installing BigBlueButton..."
-add-apt-repository ppa:bigbluebutton/support -y
-apt update
-apt install -y bigbluebutton
+echo "[3] Installing BigBlueButton via official script..."
+wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
 # ======== INSTALL DEPENDENCIES ========
-echo "[4] Installing Nginx, PostgreSQL, Node.js, Yarn, Ruby..."
-apt install -y nginx postgresql postgresql-contrib ruby-full nodejs
-curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
-echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
-apt update
-apt install -y yarn
+echo "[4] Installing additional dependencies (PostgreSQL, Ruby, Node.js, Yarn, Nginx)..."
+sudo apt install -y nginx postgresql postgresql-contrib ruby-full nodejs
+curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+sudo apt update
+sudo apt install -y yarn
 
 # ======== INSTALL GREENLIGHT ========
-echo "[5] Installing Greenlight..."
+echo "[5] Installing Greenlight manually (optional if not installed by script)..."
 cd /var/www
-git clone https://github.com/bigbluebutton/greenlight.git
+if [ ! -d greenlight ]; then
+    sudo git clone https://github.com/bigbluebutton/greenlight.git
+fi
 cd greenlight
-gem install bundler
+sudo gem install bundler
 bundle install
 yarn install
 
@@ -63,95 +63,9 @@ EOL
 
 # ======== FIREWALL ========
 echo "[8] Configuring firewall..."
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 3478/tcp
-ufw allow 5222:5223/tcp
-ufw allow 16384:32768/udp
-ufw --force enable
-
-# ======== NGINX CONFIG ========
-echo "[9] Setting up Nginx reverse proxy..."
-cat > /etc/nginx/sites-available/greenlight <<EOL
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    root $GREENLIGHT_DIR/public;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Ssl on;
-    }
-}
-EOL
-ln -s /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/
-nginx -t
-systemctl restart nginx
-
-# ======== SYSTEMD SERVICE FOR GREENLIGHT ========
-echo "[10] Creating systemd service for Greenlight..."
-cat > /etc/systemd/system/greenlight.service <<EOL
-[Unit]
-Description=Greenlight Rails server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$GREENLIGHT_DIR
-ExecStart=/usr/bin/bundle exec rails server -b 0.0.0.0 -p 3000
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOL
-
-systemctl daemon-reload
-systemctl enable greenlight.service
-systemctl start greenlight.service
-
-# ======== SSL WITH CERTBOT ========
-echo "[11] Installing Certbot and enabling SSL..."
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
-
-# ======== CREATE AUTOMATIC MAINTENANCE SCRIPT ========
-echo "[12] Creating automatic maintenance script..."
-cat > /usr/local/bin/bbb_maintenance.sh <<MAINTENANCE
-#!/bin/bash
-set -e
-DOMAIN="$DOMAIN"
-GREENLIGHT_DIR="$GREENLIGHT_DIR"
-EMAIL="$EMAIL"
-
-echo "===== Running BBB + Greenlight Maintenance ====="
-
-apt update && apt upgrade -y
-apt install --only-upgrade -y bigbluebutton
-
-if [ -d "\$GREENLIGHT_DIR" ]; then
-    cd \$GREENLIGHT_DIR
-    git pull origin main
-    gem install bundler
-    bundle install
-    yarn install
-    bundle exec rake db:migrate
-    systemctl restart greenlight.service
-fi
-
-certbot renew --quiet
-systemctl reload nginx
-
-bbb-conf --check
-MAINTENANCE
-
-chmod +x /usr/local/bin/bbb_maintenance.sh
-
-# ======== SETUP CRON FOR WEEKLY MAINTENANCE ========
-echo "[13] Setting up weekly cron job for automatic maintenance..."
-(crontab -l
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 3478/tcp
+sudo ufw allow 5222:5223/tcp
+sudo ufw allow 16384:32768/udp
+sudo ufw --
