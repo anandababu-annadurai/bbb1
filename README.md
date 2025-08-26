@@ -1,6 +1,8 @@
 sudo apt update && sudo apt upgrade -y
 sudo apt install git curl -y
 
+git reset --hard
+git pull origin main
 
 Clone the repo:
 
