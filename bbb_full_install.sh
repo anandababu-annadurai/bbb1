@@ -1,13 +1,16 @@
 #!/bin/bash
 set -e
 
-# ======== CONFIGURATION ========
-DOMAIN="bbb.example.com"           # Change this to your domain
-GREENLIGHT_DB_PASS="GreenlightPass123"  # Change this password
-EMAIL="your-email@example.com"     # For Let's Encrypt
+# ======== USER INPUT ========
+read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
+read -p "Enter your email address (for Let's Encrypt SSL): " EMAIL
+read -sp "Enter password for Greenlight DB user: " GREENLIGHT_DB_PASS
+echo
 GREENLIGHT_DIR="/var/www/greenlight"
 
 echo "===== Starting BBB + Greenlight Full Installation ====="
+echo "Domain: $DOMAIN"
+echo "Email: $EMAIL"
 
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
@@ -119,24 +122,20 @@ certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # ======== CREATE AUTOMATIC MAINTENANCE SCRIPT ========
 echo "[12] Creating automatic maintenance script..."
-cat > /usr/local/bin/bbb_maintenance.sh <<'MAINTENANCE'
+cat > /usr/local/bin/bbb_maintenance.sh <<MAINTENANCE
 #!/bin/bash
 set -e
-DOMAIN="bbb.example.com"
-GREENLIGHT_DIR="/var/www/greenlight"
-EMAIL="your-email@example.com"
+DOMAIN="$DOMAIN"
+GREENLIGHT_DIR="$GREENLIGHT_DIR"
+EMAIL="$EMAIL"
 
 echo "===== Running BBB + Greenlight Maintenance ====="
 
-# Update system packages
 apt update && apt upgrade -y
-
-# Update BBB
 apt install --only-upgrade -y bigbluebutton
 
-# Update Greenlight
-if [ -d "$GREENLIGHT_DIR" ]; then
-    cd $GREENLIGHT_DIR
+if [ -d "\$GREENLIGHT_DIR" ]; then
+    cd \$GREENLIGHT_DIR
     git pull origin main
     gem install bundler
     bundle install
@@ -145,11 +144,9 @@ if [ -d "$GREENLIGHT_DIR" ]; then
     systemctl restart greenlight.service
 fi
 
-# Renew SSL
 certbot renew --quiet
 systemctl reload nginx
 
-# BBB check
 bbb-conf --check
 MAINTENANCE
 
@@ -157,13 +154,4 @@ chmod +x /usr/local/bin/bbb_maintenance.sh
 
 # ======== SETUP CRON FOR WEEKLY MAINTENANCE ========
 echo "[13] Setting up weekly cron job for automatic maintenance..."
-(crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/bbb_maintenance.sh >> /var/log/bbb_maintenance.log 2>&1") | crontab -
-
-# ======== FINAL CHECK ========
-echo "[14] Running final BBB check..."
-bbb-conf --check
-
-echo "===== Installation & Maintenance Setup Complete! ====="
-echo "Greenlight URL: https://$DOMAIN"
-echo "Greenlight systemd service: systemctl status greenlight.service"
-echo "Maintenance script runs automatically every Sunday at 3 AM."
+(crontab -l
