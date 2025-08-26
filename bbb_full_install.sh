@@ -1,33 +1,11 @@
 #!/bin/bash
-set -eEuo pipefail
+set -e
 
-LOG_FILE="/var/log/bbb_greenlight_install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+LOGFILE="$HOME/bbb_install.log"
+exec > >(tee -a "$LOGFILE") 2>&1
 
-# ======== ROLLBACK FUNCTION ========
-rollback() {
-    echo "⚠️  A failure was detected during installation."
-    echo "Do you want to run the rollback procedure? (y/n)"
-    read -r CONFIRM
-    if [[ "$CONFIRM" == "y" || "$CONFIRM" == "Y" ]]; then
-        echo "[!] Rolling back installation..."
-        sudo systemctl stop greenlight.service || true
-        sudo systemctl disable greenlight.service || true
-        sudo rm -f /etc/systemd/system/greenlight.service
-        sudo systemctl daemon-reload
-
-        sudo rm -rf /var/www/greenlight
-        sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;" || true
-        sudo -u postgres psql -c "DROP USER IF EXISTS greenlight;" || true
-
-        echo "[✔] Rollback complete. System returned to pre-install state."
-    else
-        echo "[!] Rollback skipped. Manual cleanup may be required."
-    fi
-}
-
-# ======== TRAP FATAL ERRORS ========
-trap rollback ERR
+echo "===== BBB + Greenlight Installation Started ====="
+echo "Logging to $LOGFILE"
 
 # ======== USER INPUT ========
 read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
@@ -36,20 +14,16 @@ read -sp "Enter password for Greenlight DB user: " GREENLIGHT_DB_PASS
 echo
 GREENLIGHT_DIR="/var/www/greenlight"
 
-echo "===== Starting BBB + Greenlight Full Installation ====="
-echo "Domain: $DOMAIN"
-echo "Email: $EMAIL"
-
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl git gnupg2 build-essential \
-    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev
+    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev wget
 
 # ======== REMOVE OLD BRIGHTBOX PPA ========
 if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
     echo "[2] Removing old Brightbox Ruby PPA..."
-    sudo rm /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
+    sudo rm -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
 fi
 sudo apt update
 
@@ -60,9 +34,10 @@ echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 
 # ======== INSTALL BIGBLUEBUTTON ========
 echo "[4] Installing BigBlueButton via official script..."
-wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
+echo "Output will be logged to $LOGFILE"
+wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s "$DOMAIN" -e "$EMAIL" -g
 
-# ======== INSTALL ADDITIONAL DEPENDENCIES ========
+# ======== ADDITIONAL DEPENDENCIES ========
 echo "[5] Installing Nginx, PostgreSQL, Node.js, Yarn..."
 sudo apt install -y nginx postgresql postgresql-contrib nodejs
 curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/yarn.gpg
@@ -70,7 +45,7 @@ echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/source
 sudo apt update
 sudo apt install -y yarn
 
-# ======== INSTALL RUBY 3.3.6 VIA RBENV ========
+# ======== RUBY 3.3.6 INSTALLATION VIA RBENV ========
 echo "[6] Installing Ruby 3.3.6 via rbenv..."
 if [ ! -d "$HOME/.rbenv" ]; then
     git clone https://github.com/rbenv/rbenv.git ~/.rbenv
@@ -116,6 +91,7 @@ EOL
 
 # ======== FIREWALL ========
 echo "[10] Configuring firewall..."
+sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 3478/tcp
@@ -169,13 +145,19 @@ sudo systemctl start greenlight.service
 # ======== SSL WITH CERTBOT ========
 echo "[13] Installing Certbot and enabling SSL..."
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
+sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL"
 
 # ======== AUTOMATIC MAINTENANCE SCRIPT ========
 echo "[14] Creating automatic maintenance script..."
 cat > /usr/local/bin/bbb_maintenance.sh <<'MAINTENANCE'
 #!/bin/bash
 set -e
+
+read -p "Confirm running BBB rollback/maintenance? (y/n): " CONFIRM
+if [ "$CONFIRM" != "y" ]; then
+    echo "Maintenance cancelled by user."
+    exit 0
+fi
 
 DOMAIN="'$DOMAIN'"
 GREENLIGHT_DIR="'$GREENLIGHT_DIR'"
@@ -216,4 +198,4 @@ echo "===== Installation Complete! ====="
 echo "Greenlight URL: https://$DOMAIN"
 echo "Greenlight systemd service: systemctl status greenlight.service"
 echo "Maintenance script runs every Sunday at 3 AM."
-echo "Full installation log: $LOG_FILE"
+echo "Full log saved at $LOGFILE"
