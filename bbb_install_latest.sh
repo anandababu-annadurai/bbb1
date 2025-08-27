@@ -118,6 +118,10 @@ cd "$GREENLIGHT_SRC"
 git clone https://github.com/bigbluebutton/greenlight.git .
 git checkout v3
 
+# Make sure we are inside cloned repo
+cd "$GREENLIGHT_SRC" || exit 1
+
+# Copy and configure database.yml
 cp config/database.yml.example config/database.yml
 sed -i "s/username:.*/username: greenlight_user/" config/database.yml
 sed -i "s/password:.*/password: $GREENLIGHT_DB_PASS/" config/database.yml
