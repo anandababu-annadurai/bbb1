@@ -6,11 +6,17 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "===== BBB + Greenlight Installation Started ====="
 
-# ======== USER INPUT ========
-read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
-read -p "Enter your email address (for Let's Encrypt SSL): " EMAIL
-read -sp "Enter password for Greenlight DB user: " GREENLIGHT_DB_PASS
+# ======== USER INPUT WITH DEFAULTS ========
+read -p "Enter your domain name (e.g., bbb.example.com) [bbb.example.com]: " DOMAIN
+DOMAIN=${DOMAIN:-bbb.example.com}
+
+read -p "Enter your email address (for Let's Encrypt SSL) [admin@$DOMAIN]: " EMAIL
+EMAIL=${EMAIL:-admin@$DOMAIN}
+
+read -sp "Enter password for Greenlight DB user [default: greenlightpass]: " GREENLIGHT_DB_PASS
+GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
 echo
+
 GREENLIGHT_DIR="/var/www/greenlight"
 
 # ======== SYSTEM UPDATE ========
@@ -30,7 +36,9 @@ sudo apt update
 # ======== SET HOSTNAME ========
 echo "[3] Setting hostname..."
 sudo hostnamectl set-hostname $DOMAIN
-echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
+if ! grep -q "$DOMAIN" /etc/hosts; then
+    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
+fi
 
 # ======== INSTALL BIGBLUEBUTTON ========
 echo "[4] Installing BigBlueButton via official script..."
@@ -40,7 +48,6 @@ wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v j
 echo "[5] Installing Node.js 20.x and Yarn..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v
 npm -v
 yarn -v || sudo npm install -g yarn
 
@@ -63,9 +70,6 @@ rbenv global 3.3.6
 gem update --system
 gem install bundler
 
-ruby -v
-gem -v
-
 # ======== INSTALL GREENLIGHT ========
 echo "[7] Installing Greenlight..."
 sudo mkdir -p /var/www
@@ -81,14 +85,16 @@ yarn install || echo "[WARN] Yarn install warning ignored"
 
 # ======== CONFIGURE POSTGRESQL ========
 echo "[8] Configuring PostgreSQL database..."
-sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;" || true
+sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='greenlight'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='greenlight_development'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;"
+
 bundle exec rake db:migrate || echo "[WARN] DB migration warning ignored"
 
 # ======== GREENLIGHT CONFIG ========
 echo "[9] Generating Greenlight secrets..."
 SECRET_KEY=$(bundle exec rake secret || echo "fallback_secret")
-BBB_SECRET=$(bbb-conf --secret || echo "fallback_bbb_secret")
+BBB_SECRET=$(bbb-conf --secret | grep -oP '(?<=Secret: ).*' || echo "fallback_bbb_secret")
+
 cat > config/application.yml <<EOL
 SECRET_KEY_BASE: $SECRET_KEY
 BIGBLUEBUTTON_ENDPOINT: https://$DOMAIN/bigbluebutton/
@@ -155,21 +161,21 @@ sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # ======== AUTOMATIC MAINTENANCE SCRIPT ========
 echo "[14] Creating automatic maintenance script..."
-cat > /usr/local/bin/bbb_maintenance.sh <<'MAINTENANCE'
+cat > /usr/local/bin/bbb_maintenance.sh <<MAINTENANCE
 #!/bin/bash
 set -e
 
-DOMAIN="'$DOMAIN'"
-GREENLIGHT_DIR="'$GREENLIGHT_DIR'"
-EMAIL="'$EMAIL'"
+DOMAIN="$DOMAIN"
+GREENLIGHT_DIR="$GREENLIGHT_DIR"
+EMAIL="$EMAIL"
 
 echo "===== Running BBB + Greenlight Maintenance ====="
 
 sudo apt update && sudo apt upgrade -y
 sudo apt install --only-upgrade -y bigbluebutton libpq-dev
 
-if [ -d "$GREENLIGHT_DIR" ]; then
-    cd "$GREENLIGHT_DIR"
+if [ -d "\$GREENLIGHT_DIR" ]; then
+    cd "\$GREENLIGHT_DIR"
     git pull origin main
     gem install bundler
     bundle install
