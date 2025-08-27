@@ -56,7 +56,6 @@ echo "[4] Installing Node.js 20.x + npm from Nodesource..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Verify installation
 echo "Node.js version: $(node -v)"
 echo "NPM version: $(npm -v)"
 
@@ -75,17 +74,19 @@ fi
 echo "[6] Installing BigBlueButton..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
-# ======== INSTALL RUBY VIA PER-USER RBENV ========
-echo "[7] Installing Ruby 3.1.x via per-user rbenv..."
-
+# ======== PREPARE /var/www AND GREENLIGHT DIRECTORY ========
+echo "[7] Preparing /var/www and Greenlight directory..."
+sudo mkdir -p /var/www
+sudo chown $USER:$USER /var/www
 mkdir -p "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
 
+# ======== INSTALL RUBY VIA PER-USER RBENV ========
+echo "[8] Installing Ruby 3.1.x via per-user rbenv..."
 git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
 mkdir -p "$RBENV_ROOT/plugins"
 git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
 
-# Load rbenv for current shell
 export RBENV_ROOT="$RBENV_ROOT"
 export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
@@ -96,12 +97,12 @@ rbenv global $RUBY_VERSION
 gem install bundler
 
 # ======== CONFIGURE DATABASE ========
-echo "[8] Configuring PostgreSQL..."
+echo "[9] Configuring PostgreSQL..."
 sudo -u postgres psql -c "CREATE USER greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
 
 # ======== INSTALL GREENLIGHT ========
-echo "[9] Installing Greenlight..."
+echo "[10] Installing Greenlight..."
 git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
 git checkout v3
@@ -114,7 +115,7 @@ bundle install
 yarn install || echo "[WARN] Yarn install warning ignored"
 
 # ======== SETUP PUMA ========
-echo "[10] Configuring Puma..."
+echo "[11] Configuring Puma..."
 gem install puma
 
 cat > config/puma.rb <<EOL
@@ -130,13 +131,13 @@ plugin :tmp_restart
 EOL
 
 # ======== DB MIGRATIONS & SEED ========
-echo "[11] Running DB migrations..."
+echo "[12] Running DB migrations..."
 export RAILS_ENV=production
 bundle exec rake assets:precompile
 bundle exec rake db:create db:migrate db:seed
 
 # ======== SYSTEMD SERVICE ========
-echo "[12] Creating Greenlight systemd service..."
+echo "[13] Creating Greenlight systemd service..."
 cat > /etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight Puma Server
@@ -160,7 +161,7 @@ sudo systemctl enable greenlight
 sudo systemctl start greenlight
 
 # ======== NGINX + SSL ========
-echo "[13] Configuring Nginx for $DOMAIN..."
+echo "[14] Configuring Nginx for $DOMAIN..."
 cat > /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
@@ -180,7 +181,7 @@ EOL
 sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
 sudo nginx -t && sudo systemctl restart nginx
 
-echo "[14] Requesting SSL certificate..."
+echo "[15] Requesting SSL certificate..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 echo "✅ Installation complete! Access Greenlight at: https://$DOMAIN"
