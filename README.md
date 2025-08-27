@@ -23,8 +23,9 @@ sudo ./bbb_full_install.sh
 ✅ Usage
 
 Fresh install:
-sudo bash greenlight_install.sh
+sudo bash greenlight_install.sh --domain yourdomain.com
 
 Cleanup + reinstall:
-sudo bash greenlight_install.sh --clean
+sudo bash greenlight_install.sh --clean --domain yourdomain.com
+
 
