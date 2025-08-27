@@ -44,25 +44,39 @@ echo "[2] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl git gnupg2 build-essential \
     zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip nodejs npm
+    libpq-dev postgresql postgresql-contrib nginx unzip zip
+
+# ======== CLEAN NODE / NPM CONFLICTS ========
+echo "[3] Cleaning old Node.js/npm packages..."
+sudo apt remove -y nodejs npm || true
+sudo apt autoremove -y
+
+# ======== INSTALL NODE 20.x + NPM ========
+echo "[4] Installing Node.js 20.x + npm from Nodesource..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Verify installation
+echo "Node.js version: $(node -v)"
+echo "NPM version: $(npm -v)"
+
+# Install Yarn globally
+sudo npm install -g yarn
+echo "Yarn version: $(yarn -v)"
 
 # ======== SET HOSTNAME ========
-echo "[3] Setting hostname..."
+echo "[5] Setting hostname..."
 sudo hostnamectl set-hostname $DOMAIN
 if ! grep -q "$DOMAIN" /etc/hosts; then
     echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 fi
 
 # ======== INSTALL BIGBLUEBUTTON ========
-echo "[4] Installing BigBlueButton..."
+echo "[6] Installing BigBlueButton..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
-# ======== INSTALL NODE & YARN ========
-echo "[5] Installing Yarn..."
-sudo npm install -g yarn
-
-# ======== INSTALL RUBY VIA USER rbenv ========
-echo "[6] Installing Ruby 3.1.x via per-user rbenv..."
+# ======== INSTALL RUBY VIA PER-USER RBENV ========
+echo "[7] Installing Ruby 3.1.x via per-user rbenv..."
 
 mkdir -p "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
@@ -82,12 +96,12 @@ rbenv global $RUBY_VERSION
 gem install bundler
 
 # ======== CONFIGURE DATABASE ========
-echo "[7] Configuring PostgreSQL..."
+echo "[8] Configuring PostgreSQL..."
 sudo -u postgres psql -c "CREATE USER greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
 
 # ======== INSTALL GREENLIGHT ========
-echo "[8] Installing Greenlight..."
+echo "[9] Installing Greenlight..."
 git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
 git checkout v3
@@ -100,7 +114,7 @@ bundle install
 yarn install || echo "[WARN] Yarn install warning ignored"
 
 # ======== SETUP PUMA ========
-echo "[9] Configuring Puma..."
+echo "[10] Configuring Puma..."
 gem install puma
 
 cat > config/puma.rb <<EOL
@@ -116,13 +130,13 @@ plugin :tmp_restart
 EOL
 
 # ======== DB MIGRATIONS & SEED ========
-echo "[10] Running DB migrations..."
+echo "[11] Running DB migrations..."
 export RAILS_ENV=production
 bundle exec rake assets:precompile
 bundle exec rake db:create db:migrate db:seed
 
 # ======== SYSTEMD SERVICE ========
-echo "[11] Creating Greenlight systemd service..."
+echo "[12] Creating Greenlight systemd service..."
 cat > /etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight Puma Server
@@ -146,7 +160,7 @@ sudo systemctl enable greenlight
 sudo systemctl start greenlight
 
 # ======== NGINX + SSL ========
-echo "[12] Configuring Nginx for $DOMAIN..."
+echo "[13] Configuring Nginx for $DOMAIN..."
 cat > /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
@@ -166,7 +180,7 @@ EOL
 sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
 sudo nginx -t && sudo systemctl restart nginx
 
-echo "[13] Requesting SSL certificate..."
+echo "[14] Requesting SSL certificate..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 echo "✅ Installation complete! Access Greenlight at: https://$DOMAIN"
