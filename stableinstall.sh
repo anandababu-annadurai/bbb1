@@ -1,0 +1,217 @@
+cd ~
+cat > bbb_install_fixed.sh << 'EOF'
+#!/bin/bash
+set -e
+
+LOG_FILE="/var/log/bbb_full_install.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "===== BBB + Greenlight Installation Started ====="
+
+# ======== USER INPUT WITH DEFAULTS ========
+read -p "Enter your domain name (e.g., bbb.example.com) [bbb.tutorzlabs.com]: " DOMAIN
+DOMAIN=${DOMAIN:-bbb.tutorzlabs.com}
+
+read -p "Enter your email address (for Let's Encrypt SSL) [admin@$DOMAIN]: " EMAIL
+EMAIL=${EMAIL:-admin@$DOMAIN}
+
+read -sp "Enter password for Greenlight DB user [default: greenlightpass]: " GREENLIGHT_DB_PASS
+GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
+echo
+
+GREENLIGHT_DIR="/var/www/greenlight"
+
+# ======== FIREWALL SETUP (EARLY) - ENSURE SSH IS ALWAYS ALLOWED ========
+echo "[0] Configuring firewall with SSH protection..."
+sudo ufw --force reset
+sudo ufw allow ssh
+sudo ufw allow 22/tcp
+echo "SSH access secured before proceeding..."
+
+# ======== SYSTEM UPDATE ========
+echo "[1] Updating system packages..."
+sudo apt update -y && sudo apt upgrade -y
+sudo apt install -y software-properties-common curl git gnupg2 build-essential \
+    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
+    libpq-dev postgresql postgresql-contrib nginx unzip zip
+
+# ======== REMOVE OLD BRIGHTBOX PPA ========
+if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
+    echo "[2] Removing old Brightbox Ruby PPA..."
+    sudo rm /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
+fi
+sudo apt update
+
+# ======== SET HOSTNAME ========
+echo "[3] Setting hostname..."
+sudo hostnamectl set-hostname $DOMAIN
+if ! grep -q "$DOMAIN" /etc/hosts; then
+    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
+fi
+
+# Skip BBB installation if already installed
+if ! command -v bbb-conf &> /dev/null; then
+    echo "[4] Installing BigBlueButton via official script..."
+    wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
+else
+    echo "[4] BigBlueButton already installed, skipping..."
+fi
+
+# ======== INSTALL NODE 20 & YARN ========
+echo "[5] Installing Node.js 20.x and Yarn..."
+if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt install -y nodejs
+fi
+yarn -v || sudo npm install -g yarn
+
+# ======== INSTALL RBENV + RUBY 3.3.6 ========
+echo "[6] Installing rbenv and Ruby 3.3.6..."
+if [ ! -d "/usr/local/rbenv" ]; then
+    sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
+    cd /usr/local/rbenv && sudo src/configure && sudo make -C src
+    sudo mkdir -p /usr/local/rbenv/plugins
+    sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
+fi
+
+export RBENV_ROOT="/usr/local/rbenv"
+export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
+eval "$(rbenv init -)"
+
+rbenv install -s 3.3.6
+rbenv global 3.3.6
+
+gem update --system
+gem install bundler
+
+# ======== INSTALL GREENLIGHT ========
+echo "[7] Installing Greenlight..."
+sudo mkdir -p /var/www
+cd /var/www
+if [ ! -d greenlight ]; then
+    sudo git clone -b v3 https://github.com/bigbluebutton/greenlight.git
+fi
+cd greenlight
+rbenv local 3.3.6
+gem install bundler
+bundle install
+yarn install || echo "[WARN] Yarn install warning ignored"
+
+# ======== CONFIGURE POSTGRESQL ========
+echo "[8] Configuring PostgreSQL database..."
+sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='greenlight'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';"
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='greenlight_development'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE greenlight_development TO greenlight;"
+
+# Create database.yml configuration file
+echo "[8.1] Creating database configuration..."
+cat > config/database.yml <<EOL
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  username: greenlight
+  password: $GREENLIGHT_DB_PASS
+  host: localhost
+
+development:
+  <<: *default
+  database: greenlight_development
+
+production:
+  <<: *default
+  database: greenlight_production
+EOL
+
+# Set proper environment and run database setup
+export RAILS_ENV=development
+bundle exec rake db:create db:migrate db:seed || echo "[WARN] DB setup warning ignored"
+
+# ======== GREENLIGHT CONFIG ========
+echo "[9] Generating Greenlight secrets..."
+SECRET_KEY=$(bundle exec rake secret || echo "fallback_secret")
+BBB_SECRET=$(bbb-conf --secret | grep -oP '(?<=Secret: ).*' || echo "fallback_bbb_secret")
+
+cat > config/application.yml <<EOL
+SECRET_KEY_BASE: $SECRET_KEY
+BIGBLUEBUTTON_ENDPOINT: https://$DOMAIN/bigbluebutton/
+BIGBLUEBUTTON_SECRET: $BBB_SECRET
+RELATIVE_URL_ROOT: ""
+URL_HOST: "$DOMAIN"
+EOL
+
+# Set proper permissions
+sudo chown -R root:root /var/www/greenlight
+sudo mkdir -p /var/www/greenlight/log /var/www/greenlight/tmp/pids
+sudo touch /var/www/greenlight/log/development.log
+sudo chmod 664 /var/www/greenlight/log/development.log
+
+# ======== COMPLETE FIREWALL CONFIGURATION ========
+echo "[10] Completing firewall configuration..."
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 3478/tcp
+sudo ufw allow 5222:5223/tcp
+sudo ufw allow 16384:32768/udp
+sudo ufw --force enable
+
+# ======== NGINX CONFIG ========
+echo "[11] Setting up Nginx reverse proxy..."
+sudo tee /etc/nginx/sites-available/greenlight <<EOL
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    root $GREENLIGHT_DIR/public;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Ssl on;
+    }
+}
+EOL
+sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+# ======== SYSTEMD SERVICE FOR GREENLIGHT ========
+echo "[12] Creating systemd service for Greenlight..."
+sudo tee /etc/systemd/system/greenlight.service <<EOL
+[Unit]
+Description=Greenlight Rails server
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$GREENLIGHT_DIR
+Environment=RAILS_ENV=development
+Environment=RBENV_ROOT=/usr/local/rbenv
+Environment=PATH=/usr/local/rbenv/bin:/usr/local/rbenv/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/rbenv/shims/bundle exec rails server -e development -b 0.0.0.0 -p 3000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+sudo systemctl daemon-reload
+sudo systemctl enable greenlight.service
+sudo systemctl start greenlight.service
+
+# ======== SSL WITH CERTBOT ========
+echo "[13] Installing Certbot and enabling SSL..."
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || echo "[WARN] SSL setup warning ignored"
+
+echo "===== Installation Complete! ====="
+echo "Greenlight URL: https://$DOMAIN"
+echo "Check service status: sudo systemctl status greenlight.service"
+EOF
+
+chmod +x bbb_install_fixed.sh
+sudo ./bbb_install_fixed.sh
