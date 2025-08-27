@@ -78,11 +78,12 @@ wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v j
 echo "[7] Preparing /var/www and Greenlight directory..."
 sudo mkdir -p /var/www
 sudo chown $USER:$USER /var/www
-mkdir -p "$GREENLIGHT_DIR"
-cd "$GREENLIGHT_DIR"
 
 # ======== INSTALL RUBY VIA PER-USER RBENV ========
 echo "[8] Installing Ruby 3.1.x via per-user rbenv..."
+mkdir -p "$GREENLIGHT_DIR"
+cd "$GREENLIGHT_DIR"
+
 git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
 mkdir -p "$RBENV_ROOT/plugins"
 git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
@@ -103,6 +104,14 @@ sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight
 
 # ======== INSTALL GREENLIGHT ========
 echo "[10] Installing Greenlight..."
+
+# Clean clone if directory exists
+if [ -d "$GREENLIGHT_DIR" ]; then
+    echo "[INFO] Removing existing Greenlight directory for clean install..."
+    rm -rf "$GREENLIGHT_DIR"
+    mkdir -p "$GREENLIGHT_DIR"
+fi
+
 git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
 git checkout v3
