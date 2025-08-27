@@ -1,31 +1,50 @@
 #!/bin/bash
 set -e
 
-# ===============================
-# Greenlight Install Script (with --clean option)
-# ===============================
+DOMAIN=""
+CLEAN=false
 
-if [[ "$1" == "--clean" ]]; then
+# ===============================
+# Parse Args
+# ===============================
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --clean) CLEAN=true ;;
+    --domain) DOMAIN="$2"; shift ;;
+  esac
+  shift
+done
+
+if [[ -z "$DOMAIN" ]]; then
+  echo "❌ ERROR: You must provide a domain with --domain"
+  echo "Usage: sudo bash $0 --domain example.com [--clean]"
+  exit 1
+fi
+
+# ===============================
+# Cleanup if requested
+# ===============================
+if $CLEAN; then
   echo "[CLEAN] Stopping existing Greenlight service..."
-  sudo systemctl stop greenlight || true
-  sudo systemctl disable greenlight || true
-  sudo rm -f /etc/systemd/system/greenlight.service
-  sudo systemctl daemon-reload
+  systemctl stop greenlight || true
+  systemctl disable greenlight || true
+  rm -f /etc/systemd/system/greenlight.service
+  systemctl daemon-reload
 
   echo "[CLEAN] Removing old Greenlight directory..."
-  sudo rm -rf /var/www/greenlight
+  rm -rf /var/www/greenlight
 
   echo "[CLEAN] Dropping old PostgreSQL DB/user..."
   sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_production;" || true
   sudo -u postgres psql -c "DROP USER IF EXISTS greenlight_user;" || true
 
   echo "[CLEAN] Flushing Redis cache..."
-  sudo systemctl stop redis || true
-  sudo rm -rf /var/lib/redis/* || true
-  sudo systemctl start redis || true
+  systemctl stop redis || true
+  rm -rf /var/lib/redis/* || true
+  systemctl start redis || true
 
   echo "[CLEAN] Removing old rbenv installation..."
-  sudo rm -rf /usr/local/rbenv || true
+  rm -rf /usr/local/rbenv || true
 
   echo "[CLEAN] Old installation removed. Continuing with fresh install..."
 fi
@@ -36,7 +55,8 @@ fi
 echo "[1] Installing dependencies..."
 apt-get update -y
 apt-get install -y git curl gnupg build-essential libssl-dev libreadline-dev zlib1g-dev \
-                   postgresql postgresql-contrib redis-server yarn nodejs nginx
+                   postgresql postgresql-contrib redis-server yarn nodejs nginx \
+                   certbot python3-certbot-nginx
 
 # ===============================
 # [2] Setup rbenv & Ruby
@@ -133,13 +153,13 @@ systemctl enable greenlight
 systemctl start greenlight
 
 # ===============================
-# [8] Nginx Reverse Proxy
+# [8] Nginx + SSL
 # ===============================
-echo "[8] Configuring Nginx..."
+echo "[8] Configuring Nginx for $DOMAIN..."
 cat > /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
-    server_name _;
+    server_name $DOMAIN;
 
     root /var/www/greenlight/public;
 
@@ -155,4 +175,8 @@ EOL
 ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
 nginx -t && systemctl restart nginx
 
-echo "✅ Greenlight installation complete!"
+# Issue SSL certificate
+echo "[9] Requesting SSL certificate for $DOMAIN..."
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN
+
+echo "✅ Greenlight installed and secured with HTTPS at https://$DOMAIN"
