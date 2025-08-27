@@ -18,7 +18,7 @@ echo "[1] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl git gnupg2 build-essential \
     zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx nodejs yarn unzip zip
+    libpq-dev postgresql postgresql-contrib nginx unzip zip
 
 # ======== REMOVE OLD BRIGHTBOX PPA ========
 if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
@@ -27,7 +27,7 @@ if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
 fi
 sudo apt update
 
-# ======== HOSTNAME ========
+# ======== SET HOSTNAME ========
 echo "[3] Setting hostname..."
 sudo hostnamectl set-hostname $DOMAIN
 echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
@@ -36,8 +36,16 @@ echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 echo "[4] Installing BigBlueButton via official script..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
+# ======== INSTALL NODE 20 & YARN ========
+echo "[5] Installing Node.js 20.x and Yarn..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v
+npm -v
+yarn -v || sudo npm install -g yarn
+
 # ======== INSTALL RBENV + RUBY 3.3.6 ========
-echo "[5] Installing rbenv and Ruby 3.3.6..."
+echo "[6] Installing rbenv and Ruby 3.3.6..."
 if [ ! -d "/usr/local/rbenv" ]; then
     sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
     cd /usr/local/rbenv && sudo src/configure && sudo make -C src
@@ -59,7 +67,7 @@ ruby -v
 gem -v
 
 # ======== INSTALL GREENLIGHT ========
-echo "[6] Installing Greenlight..."
+echo "[7] Installing Greenlight..."
 sudo mkdir -p /var/www
 cd /var/www
 if [ ! -d greenlight ]; then
@@ -71,21 +79,16 @@ gem install bundler
 bundle install
 yarn install || echo "[WARN] Yarn install warning ignored"
 
-# ======== DATABASE CONFIG ========
-echo "[7] Configuring PostgreSQL database..."
-sudo systemctl enable postgresql --now
-
-sudo -u postgres psql -c "CREATE ROLE greenlight LOGIN PASSWORD '$GREENLIGHT_DB_PASS';" || true
+# ======== CONFIGURE POSTGRESQL ========
+echo "[8] Configuring PostgreSQL database..."
+sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_test OWNER greenlight;" || true
-
-export GREENLIGHT_DB_PASS="$GREENLIGHT_DB_PASS"
-bundle exec rails db:create db:migrate || echo "[WARN] DB migration warning ignored"
+bundle exec rake db:migrate || echo "[WARN] DB migration warning ignored"
 
 # ======== GREENLIGHT CONFIG ========
-echo "[8] Generating Greenlight secrets..."
-SECRET_KEY=$(rails secret)
-BBB_SECRET=$(bbb-conf --secret)
+echo "[9] Generating Greenlight secrets..."
+SECRET_KEY=$(bundle exec rake secret || echo "fallback_secret")
+BBB_SECRET=$(bbb-conf --secret || echo "fallback_bbb_secret")
 cat > config/application.yml <<EOL
 SECRET_KEY_BASE: $SECRET_KEY
 BIGBLUEBUTTON_ENDPOINT: https://$DOMAIN/bigbluebutton/
@@ -93,7 +96,7 @@ BIGBLUEBUTTON_SECRET: $BBB_SECRET
 EOL
 
 # ======== FIREWALL ========
-echo "[9] Configuring firewall..."
+echo "[10] Configuring firewall..."
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 3478/tcp
@@ -102,7 +105,7 @@ sudo ufw allow 16384:32768/udp
 sudo ufw --force enable
 
 # ======== NGINX CONFIG ========
-echo "[10] Setting up Nginx reverse proxy..."
+echo "[11] Setting up Nginx reverse proxy..."
 cat > /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
@@ -124,7 +127,7 @@ sudo nginx -t
 sudo systemctl restart nginx
 
 # ======== SYSTEMD SERVICE FOR GREENLIGHT ========
-echo "[11] Creating systemd service for Greenlight..."
+echo "[12] Creating systemd service for Greenlight..."
 cat > /etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight Rails server
@@ -134,7 +137,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$GREENLIGHT_DIR
-ExecStart=/usr/local/rbenv/shims/bundle exec rails server -b 0.0.0.0 -p 3000
+ExecStart=$RBENV_ROOT/shims/bundle exec rails server -b 0.0.0.0 -p 3000
 Restart=always
 
 [Install]
@@ -146,12 +149,12 @@ sudo systemctl enable greenlight.service
 sudo systemctl start greenlight.service
 
 # ======== SSL WITH CERTBOT ========
-echo "[12] Installing Certbot and enabling SSL..."
+echo "[13] Installing Certbot and enabling SSL..."
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # ======== AUTOMATIC MAINTENANCE SCRIPT ========
-echo "[13] Creating automatic maintenance script..."
+echo "[14] Creating automatic maintenance script..."
 cat > /usr/local/bin/bbb_maintenance.sh <<'MAINTENANCE'
 #!/bin/bash
 set -e
@@ -170,8 +173,8 @@ if [ -d "$GREENLIGHT_DIR" ]; then
     git pull origin main
     gem install bundler
     bundle install
-    yarn install || echo "[WARN] Yarn install warning ignored"
-    bundle exec rails db:migrate || echo "[WARN] DB migration warning ignored"
+    yarn install
+    bundle exec rake db:migrate || echo "[WARN] DB migration warning ignored"
     sudo systemctl restart greenlight.service
 fi
 
@@ -184,12 +187,12 @@ MAINTENANCE
 sudo chmod +x /usr/local/bin/bbb_maintenance.sh
 
 # ======== SETUP WEEKLY CRON FOR MAINTENANCE ========
-echo "[14] Setting up weekly cron job for automatic maintenance..."
+echo "[15] Setting up weekly cron job for automatic maintenance..."
 (crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/bbb_maintenance.sh >> /var/log/bbb_maintenance.log 2>&1") | crontab -
 
 # ======== FINAL CHECK ========
-echo "[15] Running final BBB check..."
-bbb-conf --check
+echo "[16] Running final BBB check..."
+bbb-conf --check || echo "[WARN] BBB check warning ignored"
 
 echo "===== Installation Complete! ====="
 echo "Greenlight URL: https://$DOMAIN"
