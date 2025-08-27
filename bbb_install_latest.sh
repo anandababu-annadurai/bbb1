@@ -18,6 +18,7 @@ GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
 echo
 
 GREENLIGHT_DIR="/var/www/greenlight"
+RBENV_ROOT="$GREENLIGHT_DIR/.rbenv"
 
 # ======== CLEAN OLD INSTALLATION ========
 echo "[0] Cleaning old Greenlight installation (if any)..."
@@ -25,8 +26,7 @@ sudo systemctl stop greenlight || true
 sudo systemctl disable greenlight || true
 sudo rm -f /etc/systemd/system/greenlight.service
 sudo systemctl daemon-reload
-sudo rm -rf "$GREENLIGHT_DIR" /usr/local/rbenv || true
-cd /tmp
+sudo rm -rf "$GREENLIGHT_DIR" || true
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_production;" || true
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;" || true
 sudo -u postgres psql -c "DROP USER IF EXISTS greenlight_user;" || true
@@ -44,74 +44,52 @@ echo "[2] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl git gnupg2 build-essential \
     zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip
-
-# ======== REMOVE OLD RUBY PPA ========
-if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
-    echo "[3] Removing old Brightbox Ruby PPA..."
-    sudo rm /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
-fi
-sudo apt update
+    libpq-dev postgresql postgresql-contrib nginx unzip zip nodejs npm
 
 # ======== SET HOSTNAME ========
-echo "[4] Setting hostname..."
+echo "[3] Setting hostname..."
 sudo hostnamectl set-hostname $DOMAIN
 if ! grep -q "$DOMAIN" /etc/hosts; then
     echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 fi
 
 # ======== INSTALL BIGBLUEBUTTON ========
-echo "[5] Installing BigBlueButton..."
+echo "[4] Installing BigBlueButton..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
 # ======== INSTALL NODE & YARN ========
-echo "[6] Installing Node.js 20.x and Yarn..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-npm -v
+echo "[5] Installing Yarn..."
 sudo npm install -g yarn
-yarn -v
 
-# ======== INSTALL RUBY VIA SYSTEM-WIDE RBENV ========
-echo "[7] Installing Ruby 3.1.x via system-wide rbenv..."
+# ======== INSTALL RUBY VIA USER rbenv ========
+echo "[6] Installing Ruby 3.1.x via per-user rbenv..."
 
-# Clone rbenv (no obsolete make step)
-sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
+mkdir -p "$GREENLIGHT_DIR"
+cd "$GREENLIGHT_DIR"
 
-# Install ruby-build plugin
-sudo mkdir -p /usr/local/rbenv/plugins
-sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
-
-# Create profile script for system-wide PATH
-sudo tee /etc/profile.d/rbenv.sh > /dev/null <<'EOL'
-export RBENV_ROOT="/usr/local/rbenv"
-export PATH="$RBENV_ROOT/bin:$PATH"
-eval "$(rbenv init -)"
-EOL
-sudo chmod +x /etc/profile.d/rbenv.sh
+git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
+mkdir -p "$RBENV_ROOT/plugins"
+git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
 
 # Load rbenv for current shell
-export RBENV_ROOT="/usr/local/rbenv"
+export RBENV_ROOT="$RBENV_ROOT"
 export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
 
-# Install Ruby as root preserving environment
 RUBY_VERSION=3.1.6
-sudo -E bash -c "rbenv install -s $RUBY_VERSION"
-sudo -E bash -c "rbenv global $RUBY_VERSION"
-sudo -E bash -c "gem install bundler"
+rbenv install -s $RUBY_VERSION
+rbenv global $RUBY_VERSION
+gem install bundler
 
 # ======== CONFIGURE DATABASE ========
-echo "[8] Configuring PostgreSQL..."
+echo "[7] Configuring PostgreSQL..."
 sudo -u postgres psql -c "CREATE USER greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
 
 # ======== INSTALL GREENLIGHT ========
-echo "[9] Installing Greenlight..."
-mkdir -p /var/www
-cd /var/www
-git clone https://github.com/bigbluebutton/greenlight.git
-cd greenlight
+echo "[8] Installing Greenlight..."
+git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
+cd "$GREENLIGHT_DIR"
 git checkout v3
 
 cp config/database.yml.example config/database.yml
@@ -122,7 +100,7 @@ bundle install
 yarn install || echo "[WARN] Yarn install warning ignored"
 
 # ======== SETUP PUMA ========
-echo "[10] Configuring Puma..."
+echo "[9] Configuring Puma..."
 gem install puma
 
 cat > config/puma.rb <<EOL
@@ -138,13 +116,13 @@ plugin :tmp_restart
 EOL
 
 # ======== DB MIGRATIONS & SEED ========
-echo "[11] Running DB migrations..."
+echo "[10] Running DB migrations..."
 export RAILS_ENV=production
 bundle exec rake assets:precompile
 bundle exec rake db:create db:migrate db:seed
 
 # ======== SYSTEMD SERVICE ========
-echo "[12] Creating Greenlight systemd service..."
+echo "[11] Creating Greenlight systemd service..."
 cat > /etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight Puma Server
@@ -155,7 +133,7 @@ Type=simple
 User=root
 WorkingDirectory=$GREENLIGHT_DIR
 Environment=RAILS_ENV=production
-ExecStart=/usr/local/rbenv/shims/bundle exec puma -C config/puma.rb
+ExecStart=$RBENV_ROOT/shims/bundle exec puma -C config/puma.rb
 Restart=always
 RestartSec=10
 
@@ -168,7 +146,7 @@ sudo systemctl enable greenlight
 sudo systemctl start greenlight
 
 # ======== NGINX + SSL ========
-echo "[13] Configuring Nginx for $DOMAIN..."
+echo "[12] Configuring Nginx for $DOMAIN..."
 cat > /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
@@ -188,7 +166,7 @@ EOL
 sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
 sudo nginx -t && sudo systemctl restart nginx
 
-echo "[14] Requesting SSL certificate..."
+echo "[13] Requesting SSL certificate..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 echo "✅ Installation complete! Access Greenlight at: https://$DOMAIN"
