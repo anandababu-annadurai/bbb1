@@ -74,8 +74,8 @@ fi
 echo "[6] Installing BigBlueButton..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
-# ======== PREPARE /var/www AND GREENLIGHT DIRECTORY ========
-echo "[7] Preparing /var/www and Greenlight directory..."
+# ======== PREPARE /var/www ========
+echo "[7] Preparing /var/www..."
 sudo mkdir -p /var/www
 sudo chown $USER:$USER /var/www
 
@@ -94,7 +94,11 @@ eval "$(rbenv init -)"
 
 RUBY_VERSION=3.1.6
 rbenv install -s $RUBY_VERSION
+
+# Automatically set Ruby 3.1.6 as global default
 rbenv global $RUBY_VERSION
+rbenv rehash
+
 gem install bundler
 
 # ======== CONFIGURE DATABASE ========
@@ -105,15 +109,16 @@ sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight
 # ======== INSTALL GREENLIGHT ========
 echo "[10] Installing Greenlight..."
 
-# Clean clone if directory exists
+# Safe clean clone: remove contents but keep directory
 if [ -d "$GREENLIGHT_DIR" ]; then
-    echo "[INFO] Removing existing Greenlight directory for clean install..."
-    rm -rf "$GREENLIGHT_DIR"
+    echo "[INFO] Removing existing Greenlight files for clean install..."
+    rm -rf "$GREENLIGHT_DIR"/*
+else
     mkdir -p "$GREENLIGHT_DIR"
 fi
 
-git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
+git clone https://github.com/bigbluebutton/greenlight.git .
 git checkout v3
 
 cp config/database.yml.example config/database.yml
