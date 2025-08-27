@@ -1,24 +1,20 @@
-# Stop all services
-sudo systemctl stop greenlight.service
-sudo systemctl stop nginx
-sudo systemctl disable greenlight.service
-
-# Remove Greenlight installation
-sudo rm -rf /var/www/greenlight
+echo "[CLEAN] Stopping Greenlight service if running..."
+sudo systemctl stop greenlight || true
+sudo systemctl disable greenlight || true
 sudo rm -f /etc/systemd/system/greenlight.service
-sudo rm -f /etc/nginx/sites-enabled/greenlight
-sudo rm -f /etc/nginx/sites-available/greenlight
+sudo systemctl daemon-reload
 
-# Clean up database
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;"
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_production;"
-sudo -u postgres psql -c "DROP USER IF EXISTS greenlight;"
+echo "[CLEAN] Dropping old PostgreSQL databases and user..."
+cd /tmp
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_production;" || true
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;" || true
+sudo -u postgres psql -c "DROP USER IF EXISTS greenlight;" || true
 
-# Remove rbenv (optional, but recommended for clean install)
-sudo rm -rf /usr/local/rbenv
+echo "[CLEAN] Removing old rbenv installation..."
+sudo rm -rf /usr/local/rbenv || true
 
-# Clean up any remaining processes
+echo "[CLEAN] Killing any leftover Greenlight processes..."
 sudo pkill -f greenlight || echo "No greenlight processes found"
 
-# Restart nginx to default state
-sudo systemctl start nginx
+echo "[CLEAN] Restarting nginx..."
+sudo systemctl restart nginx
