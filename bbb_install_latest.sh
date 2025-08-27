@@ -18,6 +18,7 @@ GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
 echo
 
 GREENLIGHT_DIR="/var/www/greenlight"
+GREENLIGHT_SRC="$GREENLIGHT_DIR/greenlight-src"
 RBENV_ROOT="$GREENLIGHT_DIR/.rbenv"
 
 # ======== CLEAN OLD INSTALLATION ========
@@ -109,15 +110,11 @@ sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight
 # ======== INSTALL GREENLIGHT ========
 echo "[10] Installing Greenlight..."
 
-# Safe clean clone: remove contents but keep directory
-if [ -d "$GREENLIGHT_DIR" ]; then
-    echo "[INFO] Removing existing Greenlight files for clean install..."
-    rm -rf "$GREENLIGHT_DIR"/*
-else
-    mkdir -p "$GREENLIGHT_DIR"
-fi
+# Remove old source if exists
+rm -rf "$GREENLIGHT_SRC"
+mkdir -p "$GREENLIGHT_SRC"
 
-cd "$GREENLIGHT_DIR"
+cd "$GREENLIGHT_SRC"
 git clone https://github.com/bigbluebutton/greenlight.git .
 git checkout v3
 
@@ -160,7 +157,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$GREENLIGHT_DIR
+WorkingDirectory=$GREENLIGHT_SRC
 Environment=RAILS_ENV=production
 ExecStart=$RBENV_ROOT/shims/bundle exec puma -C config/puma.rb
 Restart=always
@@ -181,7 +178,7 @@ server {
     listen 80;
     server_name $DOMAIN;
 
-    root $GREENLIGHT_DIR/public;
+    root $GREENLIGHT_SRC/public;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
