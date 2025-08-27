@@ -37,7 +37,7 @@ echo "[4] Installing BigBlueButton via official script..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
 # ======== INSTALL RBENV + RUBY 3.3.6 ========
-echo "[5] Installing rbenv and Ruby 3.3.6..."
+echo "[5] Installing rbenv and Ruby 3.3.6 (non-blocking)..."
 if [ ! -d "/usr/local/rbenv" ]; then
     sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
     cd /usr/local/rbenv && sudo src/configure && sudo make -C src
@@ -45,19 +45,30 @@ if [ ! -d "/usr/local/rbenv" ]; then
     sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
 fi
 
-# Export rbenv system-wide
 export RBENV_ROOT="/usr/local/rbenv"
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 eval "$(rbenv init -)"
 
-rbenv install -s 3.3.6
-rbenv global 3.3.6
+# Run Ruby compilation in background
+nohup bash -c "
+    rbenv install -s 3.3.6
+    rbenv global 3.3.6
+    gem update --system
+    gem install bundler
+" >> /var/log/ruby_build.log 2>&1 &
 
-gem update --system
-gem install bundler
+RUBY_PID=$!
+echo "Ruby build started in background (PID $RUBY_PID). Logs: /var/log/ruby_build.log"
 
-ruby -v
-gem -v
+# ======== WAIT UNTIL RUBY IS READY ========
+echo "[5a] Waiting for Ruby build to complete..."
+while [ ! -x "/usr/local/rbenv/versions/3.3.6/bin/ruby" ]; do
+    echo "Ruby not ready yet... checking again in 30s"
+    sleep 30
+done
+
+echo "Ruby installed successfully:"
+/usr/local/rbenv/versions/3.3.6/bin/ruby -v
 
 # ======== INSTALL GREENLIGHT ========
 echo "[6] Installing Greenlight..."
