@@ -75,6 +75,7 @@ yarn -v
 # ======== INSTALL RUBY VIA rbenv (system-wide) ========
 echo "[7] Installing Ruby 3.1.x via rbenv (system-wide)..."
 
+# Clone rbenv into /usr/local
 sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
 cd /usr/local/rbenv && sudo src/configure && sudo make -C src
 sudo mkdir -p /usr/local/rbenv/plugins
@@ -87,12 +88,17 @@ export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
 EOL
 sudo chmod +x /etc/profile.d/rbenv.sh
-source /etc/profile.d/rbenv.sh
 
+# Load rbenv in current shell
+export RBENV_ROOT="/usr/local/rbenv"
+export PATH="$RBENV_ROOT/bin:$PATH"
+eval "$(rbenv init -)"
+
+# Install Ruby as root preserving environment
 RUBY_VERSION=3.1.6
-rbenv install -s $RUBY_VERSION
-rbenv global $RUBY_VERSION
-gem install bundler
+sudo -E bash -c "rbenv install -s $RUBY_VERSION"
+sudo -E bash -c "rbenv global $RUBY_VERSION"
+sudo -E bash -c "gem install bundler"
 
 # ======== CONFIGURE DATABASE ========
 echo "[8] Configuring PostgreSQL..."
