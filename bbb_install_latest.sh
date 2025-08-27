@@ -72,16 +72,17 @@ npm -v
 sudo npm install -g yarn
 yarn -v
 
-# ======== INSTALL RUBY VIA rbenv (system-wide) ========
-echo "[7] Installing Ruby 3.1.x via rbenv (system-wide)..."
+# ======== INSTALL RUBY VIA SYSTEM-WIDE RBENV ========
+echo "[7] Installing Ruby 3.1.x via system-wide rbenv..."
 
-# Clone rbenv into /usr/local
+# Clone rbenv (no obsolete make step)
 sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
-cd /usr/local/rbenv && sudo src/configure && sudo make -C src
+
+# Install ruby-build plugin
 sudo mkdir -p /usr/local/rbenv/plugins
 sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
 
-# Make rbenv available system-wide
+# Create profile script for system-wide PATH
 sudo tee /etc/profile.d/rbenv.sh > /dev/null <<'EOL'
 export RBENV_ROOT="/usr/local/rbenv"
 export PATH="$RBENV_ROOT/bin:$PATH"
@@ -89,7 +90,7 @@ eval "$(rbenv init -)"
 EOL
 sudo chmod +x /etc/profile.d/rbenv.sh
 
-# Load rbenv in current shell
+# Load rbenv for current shell
 export RBENV_ROOT="/usr/local/rbenv"
 export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
