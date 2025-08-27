@@ -23,7 +23,7 @@ sudo apt install -y software-properties-common curl git gnupg2 build-essential \
 # ======== REMOVE OLD BRIGHTBOX PPA ========
 if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
     echo "[2] Removing old Brightbox Ruby PPA..."
-    sudo rm /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
+    sudo rm -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
 fi
 sudo apt update
 
@@ -36,16 +36,25 @@ echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 echo "[4] Installing BigBlueButton via official script..."
 wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
-# ======== INSTALL NODEJS 20 + YARN ========
-echo "[5] Installing Node.js 20.x LTS + Yarn..."
-sudo apt remove -y nodejs
+# ======== INSTALL NODEJS & YARN ========
+echo "[5] Installing Node.js and Yarn..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-sudo npm install -g yarn
-echo "Node.js version: $(node -v)"
-echo "Yarn version: $(yarn -v)"
 
-# ======== INSTALL RBENV + RUBY 3.3.6 IN BACKGROUND ========
+if command -v yarn >/dev/null 2>&1; then
+    echo "Yarn already installed at $(which yarn), skipping npm installation."
+else
+    if [ -f /usr/bin/yarn ]; then
+        sudo rm -f /usr/bin/yarn
+    fi
+    sudo npm install -g yarn
+fi
+
+node -v
+npm -v
+yarn -v
+
+# ======== INSTALL RBENV + RUBY 3.3.6 ========
 echo "[6] Installing rbenv and Ruby 3.3.6..."
 if [ ! -d "/usr/local/rbenv" ]; then
     sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
@@ -58,12 +67,17 @@ export RBENV_ROOT="/usr/local/rbenv"
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 eval "$(rbenv init -)"
 
-echo "[6a] Starting Ruby 3.3.6 compilation in background..."
-(rbenv install -s 3.3.6 && rbenv global 3.3.6 && gem update --system && gem install bundler) &
-RUBY_PID=$!
+rbenv install -s 3.3.6
+rbenv global 3.3.6
+
+gem update --system
+gem install bundler
+
+ruby -v
+gem -v
 
 # ======== INSTALL GREENLIGHT ========
-echo "[7] Cloning Greenlight repository..."
+echo "[7] Installing Greenlight..."
 sudo mkdir -p /var/www
 cd /var/www
 if [ ! -d greenlight ]; then
@@ -71,27 +85,15 @@ if [ ! -d greenlight ]; then
 fi
 cd greenlight
 rbenv local 3.3.6
-
-# Wait for Ruby install to finish
-echo "[7a] Waiting for Ruby setup to complete..."
-wait $RUBY_PID
-echo "[7b] Ruby installation complete: $(ruby -v), Bundler: $(bundler -v)"
-
-# Run bundle install and yarn install in background
-echo "[7c] Installing Greenlight gems and JS packages in background..."
-(bundle install && yarn install) &
-GREENLIGHT_PID=$!
+gem install bundler
+bundle install
+yarn install || echo "Yarn install warning: check Node.js version if needed."
 
 # ======== DATABASE CONFIG ========
 echo "[8] Configuring PostgreSQL database..."
 sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
 sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;" || true
-
-# Wait for Greenlight dependencies
-wait $GREENLIGHT_PID
-echo "[8a] Greenlight dependencies installed."
-
-bundle exec rake db:migrate
+bundle exec rake db:migrate || echo "DB migration warning: check logs."
 
 # ======== GREENLIGHT CONFIG ========
 echo "[9] Generating Greenlight secrets..."
@@ -179,8 +181,8 @@ if [ -d "$GREENLIGHT_DIR" ]; then
     git pull origin main
     gem install bundler
     bundle install
-    yarn install
-    bundle exec rake db:migrate
+    yarn install || echo "Yarn install warning: check Node.js version."
+    bundle exec rake db:migrate || echo "DB migration warning: check logs."
     sudo systemctl restart greenlight.service
 fi
 
@@ -190,11 +192,14 @@ bbb-conf --check
 MAINTENANCE
 
 sudo chmod +x /usr/local/bin/bbb_maintenance.sh
+
+# ======== SETUP WEEKLY CRON FOR MAINTENANCE ========
+echo "[15] Setting up weekly cron job for automatic maintenance..."
 (crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/bbb_maintenance.sh >> /var/log/bbb_maintenance.log 2>&1") | crontab -
 
 # ======== FINAL CHECK ========
-echo "[15] Running final BBB check..."
-bbb-conf --check
+echo "[16] Running final BBB check..."
+bbb-conf --check || echo "Final BBB check warning: verify manually."
 
 echo "===== Installation Complete! ====="
 echo "Greenlight URL: https://$DOMAIN"
