@@ -96,8 +96,31 @@ yarn install || echo "[WARN] Yarn install warning ignored"
 echo "[8] Configuring PostgreSQL database..."
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='greenlight'" | grep -q 1 || sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$GREENLIGHT_DB_PASS';"
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='greenlight_development'" | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE greenlight_development TO greenlight;"
 
-bundle exec rake db:migrate || echo "[WARN] DB migration warning ignored"
+# Create database.yml configuration file
+echo "[8.1] Creating database configuration..."
+cat > config/database.yml <<EOL
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  username: greenlight
+  password: $GREENLIGHT_DB_PASS
+  host: localhost
+
+development:
+  <<: *default
+  database: greenlight_development
+
+production:
+  <<: *default
+  database: greenlight_production
+EOL
+
+# Set proper environment and run database setup
+export RAILS_ENV=development
+bundle exec rake db:create db:migrate db:seed || echo "[WARN] DB setup warning ignored"
 
 # ======== GREENLIGHT CONFIG ========
 echo "[9] Generating Greenlight secrets..."
