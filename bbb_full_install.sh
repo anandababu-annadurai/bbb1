@@ -19,6 +19,15 @@ echo
 
 GREENLIGHT_DIR="/var/www/greenlight"
 
+# ======== FIREWALL SETUP (EARLY) - ENSURE SSH IS ALWAYS ALLOWED ========
+echo "[0] Configuring firewall with SSH protection..."
+# Reset UFW to ensure clean state
+sudo ufw --force reset
+# CRITICAL: Allow SSH FIRST before enabling firewall
+sudo ufw allow ssh
+sudo ufw allow 22/tcp
+echo "SSH access secured before proceeding..."
+
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
@@ -101,14 +110,31 @@ BIGBLUEBUTTON_ENDPOINT: https://$DOMAIN/bigbluebutton/
 BIGBLUEBUTTON_SECRET: $BBB_SECRET
 EOL
 
-# ======== FIREWALL ========
-echo "[10] Configuring firewall..."
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 3478/tcp
-sudo ufw allow 5222:5223/tcp
-sudo ufw allow 16384:32768/udp
+# ======== COMPLETE FIREWALL CONFIGURATION ========
+echo "[10] Completing firewall configuration (SSH already secured)..."
+# Add all required ports for BBB
+sudo ufw allow 80/tcp    # HTTP
+sudo ufw allow 443/tcp   # HTTPS
+sudo ufw allow 3478/tcp  # STUN
+sudo ufw allow 5222:5223/tcp # TCP for BBB
+sudo ufw allow 16384:32768/udp # UDP for WebRTC
+
+# Double-check SSH is allowed before enabling
+sudo ufw status | grep -q "22/tcp" || sudo ufw allow 22/tcp
+sudo ufw status | grep -q "22 " || sudo ufw allow ssh
+
+# Enable firewall
 sudo ufw --force enable
+
+# Verify SSH is still accessible
+echo "Verifying SSH access is maintained..."
+sudo ufw status | grep -E "(22|ssh)" || echo "WARNING: SSH rules may not be active!"
+
+# ======== SSH SERVICE HARDENING (Optional but recommended) ========
+echo "[10.1] Ensuring SSH service is running and enabled..."
+sudo systemctl enable ssh
+sudo systemctl start ssh
+sudo systemctl status ssh --no-pager -l
 
 # ======== NGINX CONFIG ========
 echo "[11] Setting up Nginx reverse proxy..."
@@ -145,6 +171,7 @@ User=root
 WorkingDirectory=$GREENLIGHT_DIR
 ExecStart=$RBENV_ROOT/shims/bundle exec rails server -b 0.0.0.0 -p 3000
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -171,6 +198,10 @@ EMAIL="$EMAIL"
 
 echo "===== Running BBB + Greenlight Maintenance ====="
 
+# Ensure SSH is always allowed during maintenance
+sudo ufw allow ssh
+sudo ufw allow 22/tcp
+
 sudo apt update && sudo apt upgrade -y
 sudo apt install --only-upgrade -y bigbluebutton libpq-dev
 
@@ -188,6 +219,10 @@ sudo certbot renew --quiet
 sudo systemctl reload nginx
 
 bbb-conf --check
+
+# Verify SSH is still accessible after maintenance
+sudo systemctl status ssh --no-pager -l
+echo "SSH service status checked - maintenance complete"
 MAINTENANCE
 
 sudo chmod +x /usr/local/bin/bbb_maintenance.sh
@@ -196,12 +231,31 @@ sudo chmod +x /usr/local/bin/bbb_maintenance.sh
 echo "[15] Setting up weekly cron job for automatic maintenance..."
 (crontab -l 2>/dev/null; echo "0 3 * * 0 /usr/local/bin/bbb_maintenance.sh >> /var/log/bbb_maintenance.log 2>&1") | crontab -
 
+# ======== SSH CONNECTION TEST ========
+echo "[15.1] Testing SSH connectivity..."
+SSH_PORT=$(sudo ss -tlnp | grep :22 | head -1 || echo "SSH port check failed")
+echo "SSH service listening on: $SSH_PORT"
+
 # ======== FINAL CHECK ========
 echo "[16] Running final BBB check..."
 bbb-conf --check || echo "[WARN] BBB check warning ignored"
 
+# ======== FINAL SSH STATUS REPORT ========
+echo "===== SSH Security Status ====="
+echo "SSH service status:"
+sudo systemctl is-active ssh
+echo "UFW rules for SSH:"
+sudo ufw status | grep -E "(22|ssh)"
+echo "SSH listening ports:"
+sudo ss -tlnp | grep :22
+
 echo "===== Installation Complete! ====="
 echo "Greenlight URL: https://$DOMAIN"
-echo "Greenlight systemd service: systemctl status greenlight.service"
+echo "SSH Status: $(sudo systemctl is-active ssh)"
+echo "Greenlight Service: systemctl status greenlight.service"
 echo "Maintenance script runs every Sunday at 3 AM."
 echo "Logs are available at $LOG_FILE"
+echo ""
+echo "IMPORTANT: Verify you can SSH to this server before logging out!"
+echo "UFW Firewall Status:"
+sudo ufw status numbered
