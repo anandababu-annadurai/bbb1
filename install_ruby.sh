@@ -4,52 +4,28 @@ set -e
 LOG_FILE="/var/log/ruby_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== Optimized Ruby Installation ====="
+echo "===== Installing Ruby 3.1 (Precompiled) ====="
 
 # Update system
 apt-get update -y
 apt-get upgrade -y
 
-# Install build dependencies
-apt-get install -y build-essential libssl-dev libreadline-dev zlib1g-dev \
-  libyaml-dev libffi-dev libgdbm-dev libncurses5-dev autoconf bison libgmp-dev
+# Install dependencies
+apt-get install -y software-properties-common curl gnupg2 build-essential zlib1g-dev libssl-dev libreadline-dev
 
-# Create swap if needed (prevents hangs)
-if ! swapon --show | grep -q '/swapfile'; then
-    echo "[INFO] Creating 2G swapfile..."
-    fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
-fi
+# Add Brightbox Ruby PPA for precompiled Ruby
+apt-add-repository ppa:brightbox/ruby-ng -y
+apt-get update -y
 
-# Install rbenv + ruby-build
-if [ -d "/usr/local/rbenv" ]; then
-    rm -rf /usr/local/rbenv
-fi
+# Install Ruby 3.1
+apt-get install -y ruby3.1 ruby3.1-dev
 
-git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
-git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
-chmod -R 755 /usr/local/rbenv
-chown -R root:root /usr/local/rbenv
+# Ensure gem and bundler are available
+gem install bundler --no-document
 
-export RBENV_ROOT="/usr/local/rbenv"
-export PATH="$RBENV_ROOT/bin:$PATH"
-
-# Initialize rbenv
-eval "$(rbenv init -)"
-
-# Install Ruby versions
-echo "[INFO] Installing Ruby 3.1.6 (global)..."
-RUBY_BUILD_SKIP_EXISTING=true rbenv install -s 3.1.6
-
-echo "[INFO] Installing Ruby 3.1.0 (Greenlight)..."
-RUBY_BUILD_SKIP_EXISTING=true rbenv install -s 3.1.0
-
-rbenv global 3.1.6
-rbenv rehash
-
-echo "[INFO] Ruby installation completed:"
+# Verify installation
 ruby -v
 gem -v
+bundle -v
+
+echo "===== Ruby 3.1 Installation Completed Successfully ====="
