@@ -93,6 +93,9 @@ fi
 
 cd $GREENLIGHT_DIR
 
+# Ensure config folder exists
+mkdir -p config
+
 # Configure database.yml
 cat > config/database.yml <<EOL
 production:
@@ -114,5 +117,4 @@ sudo -u $GREENLIGHT_USER -H bash -c "
   bundle install --deployment --without development test
   RAILS_ENV=production bundle exec rake db:setup
 "
-
 echo "===== Installation Completed Successfully ====="
