@@ -70,12 +70,25 @@ echo "✔ Firewall configured"
 echo "[1] Installing dependencies..."
 sudo apt-get update -y && sudo apt-get upgrade -y
 sudo apt-get install -y build-essential libssl-dev libreadline-dev zlib1g-dev git curl gnupg2 \
-                        nginx certbot python3-certbot-nginx postgresql postgresql-contrib nodejs npm
+                        nginx certbot python3-certbot-nginx postgresql postgresql-contrib
 
 # ======== NODE & YARN ========
-echo "[2] Installing Yarn..."
+echo "[2] Installing Node.js 20.x and Yarn..."
+
+# Remove any conflicting Node.js/npm packages
+sudo apt remove -y nodejs npm || true
+sudo apt autoremove -y
+
+# Install Node.js 20.x from NodeSource (includes npm)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Verify installation
+echo "✔ Node.js: $(node -v), NPM: $(npm -v)"
+
+# Install Yarn globally
 sudo npm install -g yarn
-echo "✔ Node.js: $(node -v), NPM: $(npm -v), Yarn: $(yarn -v)"
+echo "✔ Yarn version: $(yarn -v)"
 
 # ======== RUBY VIA RBENV ========
 echo "[3] Installing Ruby via rbenv..."
