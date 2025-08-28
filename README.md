@@ -39,3 +39,13 @@ Cleanup + reinstall:
 sudo bash greenlight_install.sh --clean --domain yourdomain.com
 
 
+
+
+
+sudo ./install_ruby.sh → Ruby installed and verified
+
+sudo ./install_node.sh → Node.js + Yarn installed
+
+sudo ./install_bbb.sh → BBB installed
+
+sudo ./install_greenlight.sh → Greenlight + Nginx + SSL + firewall
