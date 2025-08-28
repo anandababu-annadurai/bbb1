@@ -58,18 +58,32 @@ export PATH="$RBENV_ROOT/bin:$PATH"
 # Install both Ruby versions (3.1.6 for system, 3.1.0 for Greenlight)
 echo "Installing Ruby 3.1.6..."
 rbenv install 3.1.6
+
 echo "Installing Ruby 3.1.0 (required by Greenlight)..."
 rbenv install 3.1.0
 
-# Set global version and install bundler
+# Set global version and rehash to update shims
 rbenv global 3.1.6
 rbenv rehash
+
+# Update PATH to include rbenv shims
+export PATH="$RBENV_ROOT/shims:$PATH"
+
+# Verify ruby and gem are available
+which ruby
+which gem
+ruby -v
+
+# Install bundler for current Ruby version (3.1.6)
 gem install bundler
+rbenv rehash
 
 # Install bundler for Ruby 3.1.0 as well
+echo "Installing bundler for Ruby 3.1.0..."
 RBENV_VERSION=3.1.0 gem install bundler
 rbenv rehash
 
+# Verify bundle is working
 bundle -v
 
 # ======== CONFIGURE POSTGRES ========
