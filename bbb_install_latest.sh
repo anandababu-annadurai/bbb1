@@ -230,6 +230,18 @@ echo "Bundle version: $(bundle -v)"
 
 # Configure bundle
 echo "Configuring bundle..."
+bundle config set frozen false
+bundle config set deployment false
+
+# Remove any problematic bundle state
+rm -rf .bundle/ 2>/dev/null || true
+rm -f Gemfile.lock 2>/dev/null || true
+
+# Generate new Gemfile.lock with current Ruby version
+echo "Generating Gemfile.lock..."
+bundle install
+
+# Now set production configuration
 bundle config set deployment true
 bundle config set without 'development test'
 
