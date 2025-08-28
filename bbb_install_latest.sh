@@ -1,111 +1,157 @@
 #!/bin/bash
 set -e
 
-LOG_FILE="/var/log/bbb_full_install.log"
+LOG_FILE="/var/log/bbb_greenlight_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== BBB + Greenlight Full Reinstall Started ====="
+echo "===== 🚀 BBB + Greenlight Installation Started ====="
 
-# ======== USER INPUT WITH DEFAULTS ========
-read -p "Enter your domain name (e.g., bbb.example.com) [bbb.example.com]: " DOMAIN
-DOMAIN=${DOMAIN:-bbb.example.com}
+# ======== USER INPUT ========
+read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
+read -p "Enter your email (for Let's Encrypt SSL): " EMAIL
+read -p "Enter a password for PostgreSQL Greenlight DB user: " GREENLIGHT_DB_PASS
 
-read -p "Enter email for Let's Encrypt SSL [admin@$DOMAIN]: " EMAIL
-EMAIL=${EMAIL:-admin@$DOMAIN}
-
-read -sp "Enter password for Greenlight DB user [default: greenlightpass]: " GREENLIGHT_DB_PASS
-GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
-echo
-
-GREENLIGHT_USER=ubuntu
+# ======== VARIABLES ========
+GREENLIGHT_USER="greenlight"
 GREENLIGHT_DIR="/var/www/greenlight"
 
-# ======== FIREWALL SETUP ========
-echo "[0] Configuring firewall..."
-sudo ufw --force reset
-sudo ufw allow ssh
-sudo ufw allow 22/tcp
-
 # ======== SYSTEM UPDATE ========
-echo "[1] Updating system packages..."
-sudo apt update -y && sudo apt upgrade -y
-sudo apt install -y software-properties-common curl git gnupg2 build-essential \
-    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip
+echo "[1] Updating system..."
+apt-get update -y && apt-get upgrade -y
 
-# ======== SET HOSTNAME ========
-echo "[2] Setting hostname..."
-sudo hostnamectl set-hostname $DOMAIN
-if ! grep -q "$DOMAIN" /etc/hosts; then
-    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
+# ======== INSTALL DEPENDENCIES ========
+echo "[2] Installing dependencies..."
+apt-get install -y curl wget gnupg2 git-core software-properties-common \
+    libpq-dev build-essential libssl-dev libreadline-dev zlib1g-dev \
+    libsqlite3-dev postgresql postgresql-contrib nginx
+
+# ======== INSTALL NODEJS + YARN ========
+echo "[3] Installing Node.js + Yarn..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+npm install -g yarn
+node -v && npm -v && yarn -v
+
+# ======== INSTALL RBENV + RUBY ========
+echo "[4] Installing rbenv + Ruby..."
+if [ ! -d "/usr/local/rbenv" ]; then
+    git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
+    git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
 fi
+export RBENV_ROOT="/usr/local/rbenv"
+export PATH="$RBENV_ROOT/bin:$PATH"
+eval "$(rbenv init - bash)"
 
-# ======== INSTALL NODE & YARN ========
-echo "[3] Installing Node.js 20.x and Yarn..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-npm -v
-yarn -v || sudo npm install -g yarn
-
-# ======== REMOVE OLD GREENLIGHT & RBENV ========
-echo "[4] Cleaning up old installations..."
-sudo rm -rf $GREENLIGHT_DIR
-sudo rm -rf /usr/local/rbenv
-
-# ======== INSTALL SYSTEM-WIDE RBENV ========
-echo "[5] Installing system-wide rbenv..."
-sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
-sudo mkdir -p /usr/local/rbenv/plugins
-sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
-sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER /usr/local/rbenv
-
-# ======== INSTALL RUBY 3.1.6 AS GREENLIGHT USER ========
-echo "[6] Installing Ruby 3.1.6..."
-sudo -i -u $GREENLIGHT_USER bash << EOF
-export RBENV_ROOT=/usr/local/rbenv
-export PATH="\$RBENV_ROOT/bin:\$PATH"
-eval "\$(rbenv init -)"
-
-if ! rbenv versions | grep -q "3.1.6"; then
-    rbenv install 3.1.6
-fi
-
+rbenv install -s 3.1.6
 rbenv global 3.1.6
+
 gem install bundler
-rbenv rehash
+bundle -v
+
+# ======== CONFIGURE POSTGRES ========
+echo "[5] Configuring PostgreSQL..."
+sudo -u postgres psql <<EOF
+DO
+\$do\$
+BEGIN
+   IF NOT EXISTS (
+      SELECT FROM pg_roles WHERE rolname = '$GREENLIGHT_USER') THEN
+      CREATE ROLE $GREENLIGHT_USER LOGIN PASSWORD '$GREENLIGHT_DB_PASS';
+   END IF;
+END
+\$do\$;
 EOF
 
-# ======== CONFIGURE POSTGRESQL ========
-echo "[7] Configuring PostgreSQL..."
-sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='greenlight'" | grep -q 1 || \
-sudo -u postgres psql -c "CREATE ROLE greenlight LOGIN PASSWORD '$GREENLIGHT_DB_PASS';"
-
-for DB in greenlight_production greenlight_development; do
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE DATABASE $DB OWNER greenlight;"
-done
+sudo -u postgres psql <<EOF
+DO
+\$do\$
+BEGIN
+   IF NOT EXISTS (
+      SELECT FROM pg_database WHERE datname = 'greenlight_production') THEN
+      CREATE DATABASE greenlight_production OWNER $GREENLIGHT_USER;
+   END IF;
+END
+\$do\$;
+EOF
 
 # ======== INSTALL GREENLIGHT ========
-echo "[8] Installing Greenlight..."
-sudo mkdir -p $GREENLIGHT_DIR
-sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
+echo "[6] Installing Greenlight..."
+if [ ! -d "$GREENLIGHT_DIR" ]; then
+    git clone https://github.com/bigbluebutton/greenlight.git -b v3 $GREENLIGHT_DIR
+fi
+cd $GREENLIGHT_DIR
+rbenv exec bundle install
 
-sudo -i -u $GREENLIGHT_USER bash << 'EOF'
-export RBENV_ROOT=/usr/local/rbenv
-export PATH="$RBENV_ROOT/bin:$PATH"
-eval "$(rbenv init -)"
+# ======== CONFIGURE GREENLIGHT ENV ========
+echo "[7] Configuring Greenlight environment..."
+cat > $GREENLIGHT_DIR/.env <<EOL
+SECRET_KEY_BASE=$(openssl rand -hex 64)
+BIGBLUEBUTTON_ENDPOINT=https://$DOMAIN/bigbluebutton/
+BIGBLUEBUTTON_SECRET=$(bbb-conf --secret | grep -oP '(?<=Secret: ).*')
+DATABASE_URL=postgres://$GREENLIGHT_USER:$GREENLIGHT_DB_PASS@localhost/greenlight_production
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_DOMAIN=$DOMAIN
+SMTP_USERNAME=your-email@gmail.com
+SMTP_PASSWORD=your-smtp-password
+SMTP_AUTH=plain
+SMTP_STARTTLS=true
+EOL
 
-cd $GREENLIGHT_DIR || git clone https://github.com/bigbluebutton/greenlight.git $GREENLIGHT_DIR && cd $GREENLIGHT_DIR
+chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
+chmod 600 $GREENLIGHT_DIR/.env
 
-git fetch
-git checkout v3
-git reset --hard origin/v3
+# ======== SYSTEMD SERVICE ========
+echo "[8] Creating Greenlight systemd service..."
+cat > /etc/systemd/system/greenlight.service <<EOL
+[Unit]
+Description=Greenlight Rails App
+After=network.target
 
-bundle install --deployment --without development test
-yarn install --check-files
+[Service]
+Type=simple
+User=$GREENLIGHT_USER
+WorkingDirectory=$GREENLIGHT_DIR
+EnvironmentFile=$GREENLIGHT_DIR/.env
+ExecStart=/usr/local/rbenv/shims/bundle exec puma -C config/puma.rb
+Restart=always
 
-bundle exec rake db:migrate
-bundle exec rake assets:precompile
-EOF
+[Install]
+WantedBy=multi-user.target
+EOL
 
-echo "===== BBB + Greenlight Full Reinstall Completed Successfully ====="
+systemctl daemon-reload
+systemctl enable greenlight
+systemctl start greenlight
+
+# ======== CONFIGURE NGINX ========
+echo "[9] Configuring Nginx..."
+cat > /etc/nginx/sites-available/greenlight <<EOL
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    root $GREENLIGHT_DIR/public;
+
+    passenger_enabled off;
+    passenger_app_env production;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    }
+}
+EOL
+
+ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
+nginx -t && systemctl restart nginx
+
+# ======== ENABLE HTTPS ========
+echo "[10] Enabling HTTPS with Let's Encrypt..."
+apt-get install -y certbot python3-certbot-nginx
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL --redirect
+systemctl enable certbot.timer
+certbot renew --dry-run
+
+echo "===== ✅ Greenlight is ready at: https://$DOMAIN ====="
