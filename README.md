@@ -18,6 +18,16 @@ Run it:
 sudo ./bbb_full_install.sh
 
 
+Make it executable:
+sudo chmod +x bbb_install_latest.sh
+
+
+Run it:
+sudo ./bbb_install_latest.sh 
+
+
+Manual rollback from backup
+sudo bash bbb_greenlight_install.sh --rollback
 
 
 ✅ Usage
