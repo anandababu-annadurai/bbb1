@@ -13,7 +13,7 @@ DOMAIN=${DOMAIN:-bbb.example.com}
 read -p "Enter your email for Let's Encrypt SSL (e.g., admin@example.com): " EMAIL
 EMAIL=${EMAIL:-admin@example.com}
 
-# Create greenlight directory
+# Create Greenlight directory
 cd /var/www/
 if [ -d "greenlight" ]; then
   rm -rf greenlight
@@ -21,11 +21,10 @@ fi
 git clone https://github.com/bigbluebutton/greenlight.git
 cd greenlight
 
-export RBENV_ROOT="/usr/local/rbenv"
-export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
+# Install bundler
+gem install bundler --no-document
 
-rbenv local 3.1.0
-gem install bundler
+# Install gems
 bundle install
 yarn install --check-files
 
@@ -41,7 +40,7 @@ sed -i "s|^SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$(bundle exec rake secret)|" .env
 bundle exec rake db:setup
 bundle exec rake assets:precompile
 
-# Create systemd service
+# Systemd service
 cat >/etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight
@@ -50,7 +49,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/var/www/greenlight
-ExecStart=/usr/local/rbenv/shims/bundle exec puma -C config/puma.rb
+ExecStart=/usr/bin/bundle exec puma -C config/puma.rb
 Restart=always
 User=root
 Environment=RAILS_ENV=production
@@ -63,7 +62,7 @@ systemctl daemon-reexec
 systemctl enable greenlight
 systemctl restart greenlight
 
-# Configure Nginx + SSL
+# Nginx + SSL
 apt-get install -y nginx certbot
 cat >/etc/nginx/sites-available/greenlight <<EOL
 server {
@@ -96,12 +95,11 @@ EOL
 ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 
-# Configure UFW firewall
+# Firewall
 apt-get install -y ufw
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
-
 ufw allow OpenSSH
 ufw allow 22/tcp
 ufw allow 80/tcp
@@ -114,7 +112,7 @@ ufw allow 5349/udp
 ufw allow 16384:32768/udp
 ufw --force enable
 
-# Enable auto SSL renewal
+# Auto SSL renewal
 cat >/etc/cron.d/certbot-renew <<EOL
 0 3 * * * root certbot renew --quiet && systemctl reload nginx
 EOL
