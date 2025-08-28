@@ -6,197 +6,94 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "===== BBB + Greenlight Installation Started ====="
 
-# ======== USER INPUT WITH DEFAULTS ========
-read -p "Enter your domain name (e.g., bbb.example.com) [bbb.example.com]: " DOMAIN
-DOMAIN=${DOMAIN:-bbb.example.com}
+# ======== USER INPUT ========
+read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
+read -p "Enter PostgreSQL password: " DB_PASSWORD
 
-read -p "Enter your email address (for Let's Encrypt SSL) [admin@$DOMAIN]: " EMAIL
-EMAIL=${EMAIL:-admin@$DOMAIN}
-
-read -sp "Enter password for Greenlight DB user [default: greenlightpass]: " GREENLIGHT_DB_PASS
-GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
-echo
-
+# ======== VARIABLES ========
 GREENLIGHT_DIR="/var/www/greenlight"
-GREENLIGHT_SRC="$GREENLIGHT_DIR/greenlight-src"
 RBENV_ROOT="$GREENLIGHT_DIR/.rbenv"
 
-# ======== CLEAN OLD INSTALLATION ========
-echo "[0] Cleaning old Greenlight installation (if any)..."
-sudo systemctl stop greenlight || true
-sudo systemctl disable greenlight || true
-sudo rm -f /etc/systemd/system/greenlight.service
-sudo systemctl daemon-reload
-sudo rm -rf "$GREENLIGHT_DIR" || true
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_production;" || true
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight_development;" || true
-sudo -u postgres psql -c "DROP USER IF EXISTS greenlight_user;" || true
-sudo pkill -f greenlight || echo "No greenlight processes found"
+# ======== UPDATE SYSTEM ========
+echo "[1] Updating system packages..."
+apt-get update -y
+apt-get upgrade -y
 
-# ======== FIREWALL SETUP ========
-echo "[1] Configuring firewall with SSH protection..."
-sudo ufw --force reset
-sudo ufw allow ssh
-sudo ufw allow 22/tcp
-sudo ufw --force enable
+# ======== DEPENDENCIES ========
+echo "[2] Installing dependencies..."
+apt-get install -y git curl build-essential libssl-dev libreadline-dev zlib1g-dev libpq-dev postgresql postgresql-contrib nginx
 
-# ======== SYSTEM UPDATE ========
-echo "[2] Updating system packages..."
-sudo apt update -y && sudo apt upgrade -y
-sudo apt install -y software-properties-common curl git gnupg2 build-essential \
-    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip
+# ======== BBB INSTALLATION ========
+echo "[3] Installing BigBlueButton..."
+wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | bash -s -- -v bionic-230 -s "$DOMAIN" -e admin@"$DOMAIN" -g
 
-# ======== CLEAN NODE / NPM CONFLICTS ========
-echo "[3] Cleaning old Node.js/npm packages..."
-sudo apt remove -y nodejs npm || true
-sudo apt autoremove -y
-
-# ======== INSTALL NODE 20.x + NPM ========
-echo "[4] Installing Node.js 20.x + npm from Nodesource..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
+# ======== NODE.JS & NPM ========
+echo "[4] Checking Node.js installation..."
+NODE_VERSION=$(node -v 2>/dev/null || echo "none")
+if [[ "$NODE_VERSION" == v20* ]]; then
+    echo "Node.js $NODE_VERSION already installed. Skipping."
+else
+    echo "Installing Node.js 20..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+fi
 echo "Node.js version: $(node -v)"
 echo "NPM version: $(npm -v)"
 
-# Install Yarn globally
-sudo npm install -g yarn
+# ======== YARN ========
+echo "[5] Checking Yarn installation..."
+YARN_VERSION=$(yarn -v 2>/dev/null || echo "none")
+if [[ "$YARN_VERSION" == 1.* ]]; then
+    echo "Yarn $YARN_VERSION already installed. Skipping."
+else
+    echo "Installing Yarn..."
+    npm install -g yarn
+fi
 echo "Yarn version: $(yarn -v)"
 
-# ======== SET HOSTNAME ========
-echo "[5] Setting hostname..."
-sudo hostnamectl set-hostname $DOMAIN
-if ! grep -q "$DOMAIN" /etc/hosts; then
-    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
-fi
-
-# ======== INSTALL BIGBLUEBUTTON ========
-echo "[6] Installing BigBlueButton..."
-wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
-
-# ======== PREPARE /var/www ========
-echo "[7] Preparing /var/www..."
-sudo mkdir -p /var/www
-sudo chown $USER:$USER /var/www
-
-# ======== INSTALL RUBY VIA PER-USER RBENV ========
-echo "[8] Installing Ruby 3.1.x via per-user rbenv..."
-mkdir -p "$GREENLIGHT_DIR"
-cd "$GREENLIGHT_DIR"
-
-git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
-mkdir -p "$RBENV_ROOT/plugins"
-git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
-
-export RBENV_ROOT="$RBENV_ROOT"
-export PATH="$RBENV_ROOT/bin:$PATH"
-eval "$(rbenv init -)"
-
+# ======== RUBY (via rbenv, per-user install) ========
+echo "[6] Checking Ruby installation..."
 RUBY_VERSION=3.1.6
-rbenv install -s $RUBY_VERSION
+if command -v ruby >/dev/null 2>&1 && ruby -v | grep -q "ruby 3.1."; then
+    echo "Ruby $(ruby -v) already installed. Skipping."
+else
+    echo "Installing Ruby $RUBY_VERSION via rbenv..."
+    mkdir -p "$GREENLIGHT_DIR"
+    cd "$GREENLIGHT_DIR"
 
-# Automatically set Ruby 3.1.6 as global default
-rbenv global $RUBY_VERSION
-rbenv rehash
+    if [ ! -d "$RBENV_ROOT" ]; then
+        git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
+        mkdir -p "$RBENV_ROOT/plugins"
+        git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
+    fi
+
+    export RBENV_ROOT="$RBENV_ROOT"
+    export PATH="$RBENV_ROOT/bin:$PATH"
+    eval "$(rbenv init -)"
+
+    rbenv install -s $RUBY_VERSION
+    rbenv global $RUBY_VERSION
+    rbenv rehash
+fi
 
 gem install bundler
 
-# ======== CONFIGURE DATABASE ========
-echo "[9] Configuring PostgreSQL..."
-sudo -u postgres psql -c "CREATE USER greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
+# ======== POSTGRES CONFIG ========
+echo "[7] Configuring PostgreSQL..."
+sudo -u postgres psql -c "CREATE ROLE greenlight WITH LOGIN PASSWORD '$DB_PASSWORD';" || true
+sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight;" || true
 
-# ======== INSTALL GREENLIGHT ========
-echo "[10] Installing Greenlight..."
+# ======== GREENLIGHT INSTALL ========
+echo "[8] Installing Greenlight..."
+rm -rf "$GREENLIGHT_DIR"
+git clone -b v3 https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
+cd "$GREENLIGHT_DIR"
 
-# Remove old source if exists
-rm -rf "$GREENLIGHT_SRC"
-mkdir -p "$GREENLIGHT_SRC"
-
-cd "$GREENLIGHT_SRC"
-git clone https://github.com/bigbluebutton/greenlight.git .
-git checkout v3
-
-# Make sure we are inside cloned repo
-cd "$GREENLIGHT_SRC" || exit 1
-
-# Copy and configure database.yml
 cp config/database.yml.example config/database.yml
-sed -i "s/username:.*/username: greenlight_user/" config/database.yml
-sed -i "s/password:.*/password: $GREENLIGHT_DB_PASS/" config/database.yml
+sed -i "s/username:.*/username: greenlight/" config/database.yml
+sed -i "s/password:.*/password: $DB_PASSWORD/" config/database.yml
 
 bundle install
-yarn install || echo "[WARN] Yarn install warning ignored"
+yarn install
 
-# ======== SETUP PUMA ========
-echo "[11] Configuring Puma..."
-gem install puma
-
-cat > config/puma.rb <<EOL
-max_threads_count = ENV.fetch("RAILS_MAX_THREADS") { 5 }
-min_threads_count = ENV.fetch("RAILS_MIN_THREADS") { max_threads_count }
-threads min_threads_count, max_threads_count
-port        ENV.fetch("PORT") { 3000 }
-environment ENV.fetch("RAILS_ENV") { "production" }
-pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
-workers ENV.fetch("WEB_CONCURRENCY") { 2 }
-preload_app!
-plugin :tmp_restart
-EOL
-
-# ======== DB MIGRATIONS & SEED ========
-echo "[12] Running DB migrations..."
-export RAILS_ENV=production
-bundle exec rake assets:precompile
-bundle exec rake db:create db:migrate db:seed
-
-# ======== SYSTEMD SERVICE ========
-echo "[13] Creating Greenlight systemd service..."
-cat > /etc/systemd/system/greenlight.service <<EOL
-[Unit]
-Description=Greenlight Puma Server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$GREENLIGHT_SRC
-Environment=RAILS_ENV=production
-ExecStart=$RBENV_ROOT/shims/bundle exec puma -C config/puma.rb
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOL
-
-sudo systemctl daemon-reload
-sudo systemctl enable greenlight
-sudo systemctl start greenlight
-
-# ======== NGINX + SSL ========
-echo "[14] Configuring Nginx for $DOMAIN..."
-cat > /etc/nginx/sites-available/greenlight <<EOL
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    root $GREENLIGHT_SRC/public;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOL
-
-sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
-sudo nginx -t && sudo systemctl restart nginx
-
-echo "[15] Requesting SSL certificate..."
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
-
-echo "✅ Installation complete! Access Greenlight at: https://$DOMAIN"
+echo "===== Installation Completed Successfully ====="
