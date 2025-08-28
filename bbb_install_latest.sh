@@ -4,7 +4,7 @@ set -e
 LOG_FILE="/var/log/bbb_full_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== BBB + Greenlight Installation Started ====="
+echo "===== BBB + Greenlight Fully Automated Installer ====="
 
 # ======== USER INPUT WITH DEFAULTS ========
 read -p "Enter your domain name (e.g., bbb.example.com) [bbb.example.com]: " DOMAIN
@@ -97,7 +97,7 @@ fi
 echo "3.1.6" > .ruby-version
 rbenv rehash
 
-# Handle .env
+# ======== HANDLE .env ========
 if [ ! -f .env ]; then
     if [ -f .env.example ]; then
         cp .env.example .env
@@ -108,21 +108,21 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Fetch BBB secret safely
+# Fetch BBB secret
 BBB_CONF="/usr/local/bin/bbb-conf"
 BBB_SECRET=""
 if [ -x "$BBB_CONF" ]; then
     BBB_SECRET=$($BBB_CONF --secret | awk '/Secret/ {print $2}')
 fi
-
 BBB_ENDPOINT="http://$DOMAIN/bigbluebutton/api"
 RAILS_SECRET=$(RAILS_ENV=production bundle exec rake secret || true)
 
 # Update .env safely
-sed -i "s|BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=$BBB_ENDPOINT|" .env || true
-sed -i "s|BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$BBB_SECRET|" .env || true
-sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$RAILS_SECRET|" .env || true
+grep -q "BIGBLUEBUTTON_ENDPOINT" .env && sed -i "s|BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=$BBB_ENDPOINT|" .env || echo "BIGBLUEBUTTON_ENDPOINT=$BBB_ENDPOINT" >> .env
+grep -q "BIGBLUEBUTTON_SECRET" .env && sed -i "s|BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$BBB_SECRET|" .env || echo "BIGBLUEBUTTON_SECRET=$BBB_SECRET" >> .env
+grep -q "SECRET_KEY_BASE" .env && sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$RAILS_SECRET|" .env || echo "SECRET_KEY_BASE=$RAILS_SECRET" >> .env
 
+# ======== INSTALL DEPENDENCIES ========
 bundle config set --local path 'vendor/bundle'
 bundle install
 yarn install
@@ -173,8 +173,6 @@ EOL
 
 sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
 sudo nginx -t && sudo systemctl restart nginx
-
-echo "[9] Requesting SSL certificate..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-echo "✅ BigBlueButton + Greenlight installed and secured with HTTPS at https://$DOMAIN"
+echo "✅ BigBlueButton + Greenlight fully installed at https://$DOMAIN"
