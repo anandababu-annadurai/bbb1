@@ -4,9 +4,12 @@ set -e
 LOG_FILE="/var/log/bbb_greenlight_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-# ======== MANUAL ROLLBACK FUNCTION ========
 GREENLIGHT_DIR="/var/www/greenlight"
+RBENV_DIR="$GREENLIGHT_DIR/.rbenv"
+RUBY_VERSION="3.1.6"
+DB_PASS="greenlightpass"
 
+# ======== MANUAL ROLLBACK FUNCTION ========
 manual_rollback() {
     echo "Available backups:"
     ls -1 "$GREENLIGHT_DIR/backups/"
@@ -23,7 +26,7 @@ manual_rollback() {
 
     # Restore database
     if [ -f "$BACKUP_PATH/greenlight_db.sql" ]; then
-        sudo -u postgres psql greenlight_db < "$BACKUP_PATH/greenlight_db.sql"
+        sudo -u postgres HOME=/tmp psql greenlight_db < "$BACKUP_PATH/greenlight_db.sql"
         echo "[MANUAL ROLLBACK] Database restored."
     fi
 
@@ -44,44 +47,13 @@ fi
 
 echo "===== BBB + Greenlight Installation/Upgrade Started ====="
 
-# ======== VARIABLES ========
+# ======== USER INPUT ========
 read -p "Enter your domain URL (e.g., bbb.example.com): " DOMAIN
 DOMAIN=${DOMAIN:-$(curl -s ifconfig.me)}
 echo "[INFO] Using domain: $DOMAIN"
 
-DB_PASS="greenlightpass"
-echo "[INFO] Greenlight DB password: $DB_PASS"
-
-RBENV_DIR="$GREENLIGHT_DIR/.rbenv"
-RUBY_VERSION="3.1.6"
-
-# ======== AUTOMATIC ROLLBACK FUNCTION ========
-rollback_greenlight() {
-    echo "[ROLLBACK] Restoring latest Greenlight backup..."
-    
-    LATEST_BACKUP=$(ls -dt "$GREENLIGHT_DIR/backups/"* 2>/dev/null | head -1)
-    if [ -z "$LATEST_BACKUP" ]; then
-        echo "[ROLLBACK] No backup found! Cannot rollback."
-        exit 1
-    fi
-
-    echo "[ROLLBACK] Using backup: $LATEST_BACKUP"
-
-    # Restore database
-    if [ -f "$LATEST_BACKUP/greenlight_db.sql" ]; then
-        sudo -u postgres psql greenlight_db < "$LATEST_BACKUP/greenlight_db.sql"
-        echo "[ROLLBACK] Database restored."
-    fi
-
-    # Restore .env
-    if [ -f "$LATEST_BACKUP/.env" ]; then
-        cp "$LATEST_BACKUP/.env" "$GREENLIGHT_DIR/.env"
-        echo "[ROLLBACK] .env restored."
-    fi
-
-    echo "[ROLLBACK] Rollback completed successfully."
-    exit 0
-}
+read -p "Enter your email for SSL (default: admin@$DOMAIN): " EMAIL
+EMAIL=${EMAIL:-admin@$DOMAIN}
 
 # ======== FIREWALL SETUP ========
 echo "[0] Configuring firewall..."
@@ -95,24 +67,21 @@ sudo ufw allow 16384:32768/udp
 sudo ufw --force enable
 echo "✔ Firewall configured"
 
-# ======== SYSTEM UPDATE ========
-echo "[1] Updating system packages..."
+# ======== SYSTEM UPDATE & DEPENDENCIES ========
+echo "[1] Installing dependencies..."
 sudo apt-get update -y && sudo apt-get upgrade -y
-
-# ======== DEPENDENCIES ========
-echo "[2] Installing dependencies..."
 sudo apt-get install -y build-essential libssl-dev libreadline-dev zlib1g-dev git curl gnupg2 \
                         nginx certbot python3-certbot-nginx postgresql postgresql-contrib
 
 # ======== NODE.JS + YARN ========
-echo "[3] Installing Node.js & Yarn..."
+echo "[2] Installing Node.js & Yarn..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
 sudo apt-get install -y nodejs
 sudo npm install -g yarn
 echo "✔ Node.js: $(node -v), NPM: $(npm -v), Yarn: $(yarn -v)"
 
-# ======== RUBY VIA RBENV (PER-USER, SKIP IF INSTALLED) ========
-echo "[4] Installing Ruby via rbenv..."
+# ======== RUBY VIA RBENV ========
+echo "[3] Installing Ruby via rbenv..."
 export RBENV_ROOT="$RBENV_DIR"
 export PATH="$RBENV_ROOT/bin:$PATH"
 
@@ -125,7 +94,7 @@ fi
 eval "$(rbenv init -)"
 
 if rbenv versions | grep -q "$RUBY_VERSION"; then
-    echo "✔ Ruby $RUBY_VERSION already installed under $RBENV_DIR"
+    echo "✔ Ruby $RUBY_VERSION already installed"
 else
     echo "[INFO] Installing Ruby $RUBY_VERSION..."
     rbenv install "$RUBY_VERSION"
@@ -138,8 +107,8 @@ fi
 echo "✔ Ruby and Bundler ready"
 
 # ======== POSTGRESQL SETUP ========
-echo "[5] Configuring PostgreSQL..."
-sudo -u postgres psql <<EOF
+echo "[4] Configuring PostgreSQL..."
+sudo -u postgres HOME=/tmp psql <<EOF
 DO
 \$do\$
 BEGIN
@@ -155,10 +124,10 @@ echo "✔ PostgreSQL configured"
 
 # ======== BACKUP BEFORE UPGRADE ========
 if [ -d "$GREENLIGHT_DIR" ]; then
-    echo "[6] Backing up Greenlight database and .env before upgrade..."
+    echo "[5] Backing up Greenlight database and .env before upgrade..."
     BACKUP_DIR="$GREENLIGHT_DIR/backups/$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$BACKUP_DIR"
-    sudo -u postgres pg_dump greenlight_db > "$BACKUP_DIR/greenlight_db.sql"
+    sudo -u postgres HOME=/tmp pg_dump greenlight_db > "$BACKUP_DIR/greenlight_db.sql"
     if [ -f "$GREENLIGHT_DIR/.env" ]; then
         cp "$GREENLIGHT_DIR/.env" "$BACKUP_DIR/.env"
     fi
@@ -166,19 +135,26 @@ if [ -d "$GREENLIGHT_DIR" ]; then
 fi
 
 # ======== GREENLIGHT INSTALL / UPGRADE ========
-echo "[7] Installing or upgrading Greenlight..."
-trap 'echo "[ERROR] Something went wrong. Starting rollback..."; rollback_greenlight' ERR
+echo "[6] Installing or upgrading Greenlight..."
+trap 'echo "[ERROR] Something went wrong. Starting rollback..."; manual_rollback' ERR
 
 cd /var/www
 
 if [ -d "greenlight" ]; then
-    echo "[INFO] Greenlight directory exists, pulling latest v3 branch..."
     cd greenlight
-    git fetch origin
-    git checkout v3
-    git reset --hard origin/v3
+    if [ ! -d ".git" ]; then
+        echo "[INFO] Existing folder is not a git repo. Re-cloning..."
+        cd ..
+        rm -rf greenlight
+        git clone -b v3 https://github.com/bigbluebutton/greenlight.git
+        cd greenlight
+    else
+        echo "[INFO] Updating existing Greenlight repo..."
+        git fetch origin
+        git checkout v3
+        git reset --hard origin/v3
+    fi
 else
-    echo "[INFO] Cloning Greenlight repository..."
     git clone -b v3 https://github.com/bigbluebutton/greenlight.git
     cd greenlight
 fi
@@ -207,7 +183,7 @@ RAILS_ENV=production bundle exec rake assets:precompile
 echo "✔ Greenlight installed or upgraded"
 
 # ======== NGINX CONFIG ========
-echo "[8] Configuring NGINX..."
+echo "[7] Configuring NGINX..."
 sudo tee /etc/nginx/sites-available/$DOMAIN > /dev/null <<EOF
 server {
     listen 80;
@@ -228,15 +204,13 @@ sudo ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl restart nginx
 
 # ======== SSL SETUP ========
-echo "[9] Setting up SSL with Certbot..."
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN || true
-
-# ======== UPDATE GREENLIGHT .ENV TO HTTPS ========
+echo "[8] Setting up SSL..."
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
 sed -i "s|http://$DOMAIN|https://$DOMAIN|" .env
-echo "✔ Greenlight .env updated to HTTPS"
+echo "✔ SSL and .env updated to HTTPS"
 
 # ======== SYSTEMD SERVICE ========
-echo "[10] Creating systemd service..."
+echo "[9] Creating systemd service..."
 sudo tee /etc/systemd/system/greenlight.service > /dev/null <<EOF
 [Unit]
 Description=Greenlight Rails App
@@ -258,7 +232,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable greenlight
 sudo systemctl start greenlight
 
-# ======== DONE ========
 echo "===== BBB + Greenlight Installation/Upgrade Completed Successfully ====="
 echo "Visit: https://$DOMAIN"
 sudo certbot certificates | grep "Expiry"
