@@ -32,33 +32,46 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 corepack enable
 npm install -g yarn
-
 node -v
 npm -v
 yarn -v
 
 # ======== INSTALL RBENV + RUBY ========
 echo "[4] Installing rbenv + Ruby..."
+
+# Install rbenv if not exists
 if [ ! -d "/usr/local/rbenv" ]; then
     git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
     git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
 fi
 
+# Set up rbenv environment properly
 export RBENV_ROOT="/usr/local/rbenv"
 export PATH="$RBENV_ROOT/bin:$PATH"
-eval "$(rbenv init - bash)"
 
-if ! rbenv versions | grep -q "3.1.6"; then
+# Initialize rbenv - fix the syntax error
+if command -v rbenv >/dev/null 2>&1; then
+    eval "$(rbenv init -)"
+fi
+
+# Install Ruby if not exists
+if ! rbenv versions 2>/dev/null | grep -q "3.1.6"; then
+    echo "Installing Ruby 3.1.6..."
     rbenv install 3.1.6
 fi
-rbenv global 3.1.6
 
+rbenv global 3.1.6
+rbenv rehash
+
+# Install bundler
 gem install bundler
+rbenv rehash
 bundle -v
 
 # ======== CONFIGURE POSTGRES ========
 echo "[5] Configuring PostgreSQL..."
 cd /tmp
+
 sudo -u postgres psql <<EOF
 DO
 \$do\$
@@ -85,6 +98,7 @@ EOF
 
 # ======== INSTALL GREENLIGHT ========
 echo "[6] Installing Greenlight..."
+
 if [ ! -d "$GREENLIGHT_DIR" ]; then
     git clone https://github.com/bigbluebutton/greenlight.git -b v3 $GREENLIGHT_DIR
     useradd -m -s /bin/bash $GREENLIGHT_USER || true
@@ -108,13 +122,23 @@ production:
   host: localhost
 EOL
 
-# Install gems as greenlight user
-sudo -u $GREENLIGHT_USER -H bash -c "
-  export RBENV_ROOT=/usr/local/rbenv
-  export PATH=\$RBENV_ROOT/bin:\$PATH
-  eval \$(rbenv init - bash)
-  cd $GREENLIGHT_DIR
-  bundle install --deployment --without development test
-  RAILS_ENV=production bundle exec rake db:setup
-"
+# Create a proper rbenv setup script for the greenlight user
+cat > /tmp/setup_greenlight.sh <<EOL
+#!/bin/bash
+export RBENV_ROOT=/usr/local/rbenv
+export PATH=\$RBENV_ROOT/bin:\$PATH
+eval "\$(rbenv init -)"
+cd $GREENLIGHT_DIR
+bundle install --deployment --without development test
+RAILS_ENV=production bundle exec rake db:setup
+EOL
+
+chmod +x /tmp/setup_greenlight.sh
+
+# Install gems as greenlight user with proper rbenv environment
+sudo -u $GREENLIGHT_USER -H bash /tmp/setup_greenlight.sh
+
+# Clean up
+rm -f /tmp/setup_greenlight.sh
+
 echo "===== Installation Completed Successfully ====="
