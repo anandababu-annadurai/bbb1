@@ -8,58 +8,39 @@ echo "===== BBB + Greenlight Installation Started ====="
 
 # ======== USER INPUT ========
 read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
-read -p "Enter PostgreSQL password: " DB_PASSWORD
+read -s -p "Enter a password for the Greenlight PostgreSQL user: " DB_PASSWORD
+echo ""
 
 # ======== VARIABLES ========
 GREENLIGHT_DIR="/var/www/greenlight"
-RBENV_ROOT="$GREENLIGHT_DIR/.rbenv"
+RBENV_ROOT="/var/www/greenlight/.rbenv"
+RUBY_VERSION="3.1.6"
 
-# ======== UPDATE SYSTEM ========
+# ======== SYSTEM SETUP ========
 echo "[1] Updating system packages..."
-apt-get update -y
-apt-get upgrade -y
+apt update -y && apt upgrade -y
+apt install -y curl wget gnupg2 git build-essential libssl-dev libreadline-dev zlib1g-dev \
+               postgresql postgresql-contrib redis-server \
+               yarnpkg pkg-config libpq-dev libxml2-dev libxslt1-dev file imagemagick
 
-# ======== DEPENDENCIES ========
-echo "[2] Installing dependencies..."
-apt-get install -y git curl build-essential libssl-dev libreadline-dev zlib1g-dev libpq-dev postgresql postgresql-contrib nginx
-
-# ======== BBB INSTALLATION ========
-echo "[3] Installing BigBlueButton..."
-wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | bash -s -- -v bionic-230 -s "$DOMAIN" -e admin@"$DOMAIN" -g
-
-# ======== NODE.JS & NPM ========
-echo "[4] Checking Node.js installation..."
-NODE_VERSION=$(node -v 2>/dev/null || echo "none")
-if [[ "$NODE_VERSION" == v20* ]]; then
-    echo "Node.js $NODE_VERSION already installed. Skipping."
-else
-    echo "Installing Node.js 20..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
-fi
+# ======== NODEJS + YARN ========
+echo "[2] Installing Node.js + Yarn..."
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+corepack enable
+npm install -g yarn
 echo "Node.js version: $(node -v)"
 echo "NPM version: $(npm -v)"
-
-# ======== YARN ========
-echo "[5] Checking Yarn installation..."
-YARN_VERSION=$(yarn -v 2>/dev/null || echo "none")
-if [[ "$YARN_VERSION" == 1.* ]]; then
-    echo "Yarn $YARN_VERSION already installed. Skipping."
-else
-    echo "Installing Yarn..."
-    npm install -g yarn
-fi
 echo "Yarn version: $(yarn -v)"
 
-# ======== RUBY (via rbenv, per-user install) ========
-echo "[6] Checking Ruby installation..."
-RUBY_VERSION=3.1.6
+# ======== RUBY (via rbenv) ========
+echo "[3] Checking Ruby installation..."
 if command -v ruby >/dev/null 2>&1 && ruby -v | grep -q "ruby 3.1."; then
-    echo "Ruby $(ruby -v) already installed. Skipping."
+    echo "Ruby $(ruby -v) already installed. Skipping Ruby build."
 else
     echo "Installing Ruby $RUBY_VERSION via rbenv..."
     mkdir -p "$GREENLIGHT_DIR"
-    cd "$GREENLIGHT_DIR"
+    chown -R $USER:$USER "$GREENLIGHT_DIR"
 
     if [ ! -d "$RBENV_ROOT" ]; then
         git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
@@ -72,22 +53,29 @@ else
     eval "$(rbenv init -)"
 
     rbenv install -s $RUBY_VERSION
-    rbenv global $RUBY_VERSION
+    rbenv global $RUBY_VERSION   # ✅ fixes the NOTE issue
     rbenv rehash
 fi
 
 gem install bundler
 
-# ======== POSTGRES CONFIG ========
-echo "[7] Configuring PostgreSQL..."
-sudo -u postgres psql -c "CREATE ROLE greenlight WITH LOGIN PASSWORD '$DB_PASSWORD';" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight;" || true
+# ======== POSTGRESQL ========
+echo "[4] Configuring PostgreSQL..."
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS greenlight;"
+sudo -u postgres psql -c "DROP ROLE IF EXISTS greenlight;"
+sudo -u postgres psql -c "CREATE ROLE greenlight LOGIN PASSWORD '$DB_PASSWORD';"
+sudo -u postgres psql -c "CREATE DATABASE greenlight OWNER greenlight;"
 
 # ======== GREENLIGHT INSTALL ========
-echo "[8] Installing Greenlight..."
+echo "[5] Installing Greenlight..."
 rm -rf "$GREENLIGHT_DIR"
 git clone -b v3 https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
 cd "$GREENLIGHT_DIR"
+
+if [ ! -f config/database.yml.example ]; then
+    echo "ERROR: config/database.yml.example not found in repo."
+    exit 1
+fi
 
 cp config/database.yml.example config/database.yml
 sed -i "s/username:.*/username: greenlight/" config/database.yml
@@ -96,4 +84,37 @@ sed -i "s/password:.*/password: $DB_PASSWORD/" config/database.yml
 bundle install
 yarn install
 
-echo "===== Installation Completed Successfully ====="
+# ======== GREENLIGHT CONFIG ========
+echo "[6] Setting up Greenlight..."
+cp .env.example .env
+sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$(bundle exec rake secret)|" .env
+sed -i "s|BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=http://$DOMAIN/bigbluebutton/api|" .env
+sed -i "s|BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$(bbb-conf --secret | awk '/Secret/ {print $2}')|" .env
+
+RAILS_ENV=production bundle exec rake db:setup
+RAILS_ENV=production bundle exec rake assets:precompile
+
+# ======== SERVICE SETUP ========
+echo "[7] Creating Greenlight systemd service..."
+cat >/etc/systemd/system/greenlight.service <<EOF
+[Unit]
+Description=Greenlight
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=$GREENLIGHT_DIR
+ExecStart=/bin/bash -lc 'RAILS_ENV=production bundle exec puma -C config/puma.rb'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable greenlight
+systemctl start greenlight
+
+echo "===== Installation Completed ====="
+echo "Greenlight is running at: http://$DOMAIN"
