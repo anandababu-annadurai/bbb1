@@ -41,11 +41,14 @@ sudo bash greenlight_install.sh --clean --domain yourdomain.com
 
 
 
-
+sudo chmod +x install_ruby.sh
 sudo ./install_ruby.sh → Ruby installed and verified
 
+sudo chmod +x install_node.sh
 sudo ./install_node.sh → Node.js + Yarn installed
 
+sudo chmod +x install_bbb.sh
 sudo ./install_bbb.sh → BBB installed
 
+sudo chmod +x install_greenlight.sh
 sudo ./install_greenlight.sh → Greenlight + Nginx + SSL + firewall
