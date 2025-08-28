@@ -13,5 +13,5 @@ echo "deb [signed-by=/usr/share/keyrings/bbb.gpg] https://ubuntu.bigbluebutton.o
 apt-get update -y
 apt-get install -y bigbluebutton
 
-# Verify BBB
+# Verify BBB installation
 bbb-conf --check
