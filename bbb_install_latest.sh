@@ -13,107 +13,101 @@ DOMAIN=${DOMAIN:-bbb.example.com}
 read -p "Enter email for Let's Encrypt SSL [admin@$DOMAIN]: " EMAIL
 EMAIL=${EMAIL:-admin@$DOMAIN}
 
-read -p "Enter SSH port for firewall (default 22): " SSH_PORT
-SSH_PORT=${SSH_PORT:-22}
-
-read -sp "Enter password for Greenlight DB user [greenlightpass]: " GREENLIGHT_DB_PASS
+read -sp "Enter password for Greenlight DB user [default: greenlightpass]: " GREENLIGHT_DB_PASS
 GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
 echo
 
+GREENLIGHT_USER=ubuntu
 GREENLIGHT_DIR="/var/www/greenlight"
-GREENLIGHT_USER="${SUDO_USER:-$USER}"
 
 # ======== FIREWALL SETUP ========
 echo "[0] Configuring firewall..."
 sudo ufw --force reset
-sudo ufw allow "$SSH_PORT"/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw --force enable
+sudo ufw allow ssh
+sudo ufw allow 22/tcp
 
 # ======== SYSTEM UPDATE ========
 echo "[1] Updating system packages..."
 sudo apt update -y && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl git gnupg2 build-essential \
     zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip yarn
+    libpq-dev postgresql postgresql-contrib nginx unzip zip
 
-# ======== NODE.JS & NPM ========
-echo "[2] Installing Node.js & Yarn..."
+# ======== REMOVE OLD RUBY PPA ========
+if [ -f /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list ]; then
+    sudo rm /etc/apt/sources.list.d/brightbox-ubuntu-ruby-ng-jammy.list
+    sudo apt update
+fi
+
+# ======== SET HOSTNAME ========
+echo "[2] Setting hostname..."
+sudo hostnamectl set-hostname $DOMAIN
+if ! grep -q "$DOMAIN" /etc/hosts; then
+    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
+fi
+
+# ======== INSTALL NODE & YARN ========
+echo "[3] Installing Node.js 20.x and Yarn..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v
 npm -v
-yarn -v
+yarn -v || npm install -g yarn
 
-# ======== SYSTEM-WIDE RBENV & RUBY ========
-echo "[3] Installing system-wide rbenv & Ruby..."
+# ======== INSTALL SYSTEM-WIDE RBENV ========
+echo "[4] Installing system-wide rbenv..."
 if [ ! -d "/usr/local/rbenv" ]; then
     sudo git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
     sudo mkdir -p /usr/local/rbenv/plugins
     sudo git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
     sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER /usr/local/rbenv
 fi
-
-export RBENV_ROOT="/usr/local/rbenv"
+export RBENV_ROOT=/usr/local/rbenv
 export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
 
+# ======== INSTALL RUBY 3.1.6 ========
+echo "[5] Installing Ruby 3.1.6..."
 if ! rbenv versions | grep -q "3.1.6"; then
-    echo "[INFO] Installing Ruby 3.1.6..."
     rbenv install 3.1.6
 fi
 rbenv global 3.1.6
-
-# ======== BUNDLER ========
 gem install bundler
-bundler -v
+rbenv rehash
 
-# ======== POSTGRESQL CONFIGURATION ========
-echo "[4] Configuring PostgreSQL..."
-sudo -u postgres psql -c "DO \$\$ BEGIN
-   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'greenlight_user') THEN
-      CREATE ROLE greenlight_user WITH LOGIN PASSWORD '$GREENLIGHT_DB_PASS';
-   END IF;
-END \$\$;"
-sudo -u postgres psql -c "DO \$\$ BEGIN
-   IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'greenlight_production') THEN
-      CREATE DATABASE greenlight_production OWNER greenlight_user;
-   END IF;
-END \$\$;"
+# ======== CONFIGURE POSTGRESQL ========
+echo "[6] Configuring PostgreSQL..."
+sudo -u postgres psql -c "CREATE ROLE greenlight LOGIN PASSWORD '$GREENLIGHT_DB_PASS';" || echo "Role exists"
+sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight;" || echo "Database exists"
+sudo -u postgres psql -c "CREATE DATABASE greenlight_development OWNER greenlight;" || echo "Database exists"
 
-# ======== GREENLIGHT INSTALL/UPGRADE ========
-echo "[5] Installing/upgrading Greenlight..."
-sudo mkdir -p "$GREENLIGHT_DIR"
-sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER "$GREENLIGHT_DIR"
+# ======== INSTALL OR UPGRADE GREENLIGHT ========
+echo "[7] Installing/upgrading Greenlight..."
+sudo mkdir -p $GREENLIGHT_DIR
+sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
 
-# Git safe.directory
-sudo -u $GREENLIGHT_USER git config --global --add safe.directory $GREENLIGHT_DIR
-cd $GREENLIGHT_DIR
+sudo -i -u $GREENLIGHT_USER bash << EOF
+export RBENV_ROOT=/usr/local/rbenv
+export PATH="\$RBENV_ROOT/bin:\$PATH"
+eval "\$(rbenv init -)"
 
-if [ -d "$GREENLIGHT_DIR/.git" ]; then
-    echo "[INFO] Updating existing Greenlight repo..."
-    sudo -u $GREENLIGHT_USER git fetch origin v3
-    sudo -u $GREENLIGHT_USER git reset --hard origin/v3
-else
-    echo "[INFO] Cloning Greenlight v3 branch..."
-    sudo -u $GREENLIGHT_USER git clone --branch v3 https://github.com/bigbluebutton/greenlight.git .
-fi
+cd $GREENLIGHT_DIR || git clone https://github.com/bigbluebutton/greenlight.git $GREENLIGHT_DIR && cd $GREENLIGHT_DIR
 
-# Ensure .env and database.yml exist
-if [ ! -f ".env" ]; then
-    sudo -u $GREENLIGHT_USER cp .env.example .env || sudo -u $GREENLIGHT_USER touch .env
-fi
-if [ ! -f "config/database.yml" ]; then
-    sudo -u $GREENLIGHT_USER cp config/database.yml.example config/database.yml || true
-fi
+# Ensure correct branch
+git fetch
+git checkout v3
+git pull origin v3
 
-# Install gems and JS dependencies as non-root
-sudo -u $GREENLIGHT_USER bundle install --deployment --without development test
-sudo -u $GREENLIGHT_USER yarn install --check-files
+# Install Ruby gems
+bundle install --deployment --without development test
 
-# Precompile assets & migrate DB
-sudo -u $GREENLIGHT_USER bundle exec rake db:migrate
-sudo -u $GREENLIGHT_USER bundle exec rake assets:precompile
+# Install JS dependencies
+yarn install --check-files
+
+# Run database migrations
+bundle exec rake db:migrate
+
+# Precompile assets
+bundle exec rake assets:precompile
+EOF
 
 echo "===== BBB + Greenlight Installation Completed Successfully ====="
