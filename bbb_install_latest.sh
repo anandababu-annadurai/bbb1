@@ -64,50 +64,59 @@ fi
 rbenv global 3.1.6
 gem install bundler
 
-# ======== CONFIGURE POSTGRESQL ========
+# ======== CONFIGURE POSTGRESQL SAFELY ========
 echo "[5] Configuring PostgreSQL..."
-sudo -u postgres psql -c "CREATE ROLE greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
+sudo -u postgres psql -c "DO \$\$ BEGIN
+   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='greenlight_user') THEN
+      CREATE ROLE greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';
+   END IF;
+END \$\$;"
+
+sudo -u postgres psql -c "DO \$\$ BEGIN
+   IF NOT EXISTS (SELECT FROM pg_database WHERE datname='greenlight_production') THEN
+      CREATE DATABASE greenlight_production OWNER greenlight_user;
+   END IF;
+END \$\$;"
 
 # ======== GREENLIGHT INSTALL / UPGRADE ========
 echo "[6] Installing/upgrading Greenlight..."
+sudo mkdir -p /var/www
 cd /var/www
-
-if [ -d "greenlight" ]; then
-    cd greenlight
-    if [ ! -d ".git" ]; then
-        echo "[INFO] Existing folder is not a git repo. Re-cloning..."
-        cd ..
-        sudo rm -rf greenlight
-        git clone -b v3 https://github.com/bigbluebutton/greenlight.git
-        cd greenlight
-    else
-        echo "[INFO] Updating existing Greenlight repo..."
-        git fetch origin
-        git checkout v3
-        git reset --hard origin/v3
-    fi
-else
+if [ ! -d "greenlight" ]; then
     git clone -b v3 https://github.com/bigbluebutton/greenlight.git
-    cd greenlight
 fi
 
-# ======== HANDLE .env FILE ========
+cd greenlight
+if [ ! -d ".git" ]; then
+    sudo rm -rf *
+    git clone -b v3 https://github.com/bigbluebutton/greenlight.git .
+else
+    git fetch origin
+    git checkout v3
+    git reset --hard origin/v3
+fi
+
+# Force correct Ruby version
+echo "3.1.6" > .ruby-version
+rbenv rehash
+
+# Handle .env
 if [ ! -f .env ]; then
     if [ -f .env.example ]; then
         cp .env.example .env
         echo "[INFO] Copied .env.example to .env"
     else
-        echo "[WARN] .env.example not found, creating default .env"
         touch .env
+        echo "[WARN] .env.example not found, created empty .env"
     fi
 fi
 
+# Configure environment variables
 BBB_ENDPOINT="http://$DOMAIN/bigbluebutton/api"
-BBB_SECRET=$(sudo bbb-conf --secret | awk '/Secret/ {print $2}')
+BBB_SECRET=$(/usr/bin/bbb-conf --secret | awk '/Secret/ {print $2}') || true
 sed -i "s|BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=$BBB_ENDPOINT|" .env || true
 sed -i "s|BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$BBB_SECRET|" .env || true
-sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$(bundle exec rake secret)|" .env || true
+sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$(bundle exec rake secret)||" .env || true
 
 bundle install
 yarn install
