@@ -5,7 +5,7 @@ LOG_FILE="/var/log/bbb_greenlight_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 GREENLIGHT_DIR="/var/www/greenlight"
-RBENV_DIR="$GREENLIGHT_DIR/.rbenv"
+RBENV_DIR="/usr/local/rbenv"
 RUBY_VERSION="3.1.6"
 DB_NAME="greenlight_db"
 DB_USER="greenlight_user"
@@ -74,42 +74,39 @@ sudo apt-get install -y build-essential libssl-dev libreadline-dev zlib1g-dev gi
 
 # ======== NODE & YARN ========
 echo "[2] Installing Node.js 20.x and Yarn..."
-
-# Remove any conflicting Node.js/npm packages
 sudo apt remove -y nodejs npm || true
 sudo apt autoremove -y
-
-# Install Node.js 20.x from NodeSource (includes npm)
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
-
-# Verify installation
 echo "✔ Node.js: $(node -v), NPM: $(npm -v)"
-
-# Install Yarn globally
 sudo npm install -g yarn
 echo "✔ Yarn version: $(yarn -v)"
 
-# ======== RUBY VIA RBENV ========
-echo "[3] Installing Ruby via rbenv..."
+# ======== RUBY VIA SYSTEM-WIDE RBENV ========
+echo "[3] Installing Ruby via system-wide rbenv..."
 export RBENV_ROOT="$RBENV_DIR"
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 
 if [ ! -d "$RBENV_DIR" ]; then
-    mkdir -p "$GREENLIGHT_DIR"
-    git clone https://github.com/rbenv/rbenv.git "$RBENV_DIR"
-    git clone https://github.com/rbenv/ruby-build.git "$RBENV_DIR/plugins/ruby-build"
+    sudo git clone https://github.com/rbenv/rbenv.git $RBENV_DIR
+    sudo mkdir -p $RBENV_DIR/plugins
+    sudo git clone https://github.com/rbenv/ruby-build.git $RBENV_DIR/plugins/ruby-build
+    sudo chown -R $USER:$USER $RBENV_DIR
 fi
 
 eval "$(rbenv init -)"
 
+# Install Ruby only if missing
 if ! rbenv versions | grep -q "$RUBY_VERSION"; then
     echo "[INFO] Installing Ruby $RUBY_VERSION..."
     rbenv install "$RUBY_VERSION"
+else
+    echo "[INFO] Ruby $RUBY_VERSION already installed, skipping."
 fi
 
 rbenv global "$RUBY_VERSION"
 
+# Install Bundler if missing
 if ! gem list bundler -i > /dev/null 2>&1; then
     gem install bundler
 fi
@@ -165,20 +162,17 @@ else
     cd greenlight
 fi
 
-# Copy database.yml if missing
 [ ! -f config/database.yml ] && cp config/database.yml.example config/database.yml
 sed -i "s/username:.*/username: $DB_USER/" config/database.yml
 sed -i "s/password:.*/password: $DB_PASS/" config/database.yml
 sed -i "s/database:.*/database: $DB_NAME/" config/database.yml
 
-# Load rbenv before bundle
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 eval "$(rbenv init -)"
 
 bundle install
 yarn install
 
-# Setup .env
 [ ! -f .env ] && cp .env.example .env
 BBB_ENDPOINT="http://$DOMAIN/bigbluebutton/api"
 BBB_SECRET=$(sudo bbb-conf --secret | awk '/Secret/ {print $2}')
@@ -229,7 +223,7 @@ Type=simple
 User=www-data
 WorkingDirectory=/var/www/greenlight
 Environment=RAILS_ENV=production
-ExecStart=$RBENV_ROOT/shims/bundle exec rails server -b 127.0.0.1 -p 3000
+ExecStart=$RBENV_DIR/shims/bundle exec rails server -b 127.0.0.1 -p 3000
 Restart=always
 
 [Install]
