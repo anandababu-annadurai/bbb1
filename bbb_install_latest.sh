@@ -1,9 +1,10 @@
 #!/bin/bash
 set -e
 
-LOG_FILE="/var/log/bbb_greenlight_install.log"
+LOG_FILE="/var/log/bbb_greenlight_full_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# ======== DEFAULT VARIABLES ========
 GREENLIGHT_DIR="/var/www/greenlight"
 RBENV_DIR="/usr/local/rbenv"
 RUBY_VERSION="3.1.6"
@@ -11,12 +12,11 @@ DB_NAME="greenlight_db"
 DB_USER="greenlight_user"
 DB_PASS="greenlightpass"
 
-# ======== MANUAL ROLLBACK FUNCTION ========
+# ======== FUNCTIONS ========
 manual_rollback() {
     echo "Available backups:"
     ls -1 "$GREENLIGHT_DIR/backups/"
-
-    read -p "Enter the backup folder to restore: " BACKUP_CHOICE
+    read -p "Enter backup folder to restore: " BACKUP_CHOICE
     BACKUP_PATH="$GREENLIGHT_DIR/backups/$BACKUP_CHOICE"
 
     if [ ! -d "$BACKUP_PATH" ]; then
@@ -24,19 +24,14 @@ manual_rollback() {
         exit 1
     fi
 
-    echo "[MANUAL ROLLBACK] Restoring backup: $BACKUP_PATH"
-
+    echo "[ROLLBACK] Restoring backup: $BACKUP_PATH"
     if [ -f "$BACKUP_PATH/${DB_NAME}.sql" ]; then
         sudo -u postgres HOME=/tmp psql "$DB_NAME" < "$BACKUP_PATH/${DB_NAME}.sql"
-        echo "[MANUAL ROLLBACK] Database restored."
+        echo "[ROLLBACK] Database restored."
     fi
 
-    if [ -f "$BACKUP_PATH/.env" ]; then
-        cp "$BACKUP_PATH/.env" "$GREENLIGHT_DIR/.env"
-        echo "[MANUAL ROLLBACK] .env restored."
-    fi
-
-    echo "[MANUAL ROLLBACK] Completed successfully."
+    [ -f "$BACKUP_PATH/.env" ] && cp "$BACKUP_PATH/.env" "$GREENLIGHT_DIR/.env" && echo "[ROLLBACK] .env restored."
+    echo "[ROLLBACK] Completed successfully."
     exit 0
 }
 
@@ -44,7 +39,7 @@ if [[ "$1" == "--rollback" ]]; then
     manual_rollback
 fi
 
-echo "===== BBB + Greenlight Installation/Upgrade Started ====="
+echo "===== BBB + Greenlight Full Installer Started ====="
 
 # ======== USER INPUT ========
 read -p "Enter your domain (e.g., bbb.example.com): " DOMAIN
@@ -53,6 +48,10 @@ echo "[INFO] Using domain: $DOMAIN"
 
 read -p "Enter your email for SSL (default: admin@$DOMAIN): " EMAIL
 EMAIL=${EMAIL:-admin@$DOMAIN}
+
+read -sp "Enter password for Greenlight DB user (default: greenlightpass): " DB_PASS_INPUT
+DB_PASS=${DB_PASS_INPUT:-$DB_PASS}
+echo
 
 # ======== FIREWALL ========
 echo "[0] Configuring firewall..."
@@ -70,10 +69,15 @@ echo "✔ Firewall configured"
 echo "[1] Installing dependencies..."
 sudo apt-get update -y && sudo apt-get upgrade -y
 sudo apt-get install -y build-essential libssl-dev libreadline-dev zlib1g-dev git curl gnupg2 \
-                        nginx certbot python3-certbot-nginx postgresql postgresql-contrib
+                        nginx certbot python3-certbot-nginx postgresql postgresql-contrib ufw wget lsb-release software-properties-common
+
+# ======== BIGBLUEBUTTON INSTALL ========
+echo "[2] Installing BigBlueButton..."
+wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
+echo "✔ BBB installation complete"
 
 # ======== NODE & YARN ========
-echo "[2] Installing Node.js 20.x and Yarn..."
+echo "[3] Installing Node.js 20.x and Yarn..."
 sudo apt remove -y nodejs npm || true
 sudo apt autoremove -y
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -83,7 +87,7 @@ sudo npm install -g yarn
 echo "✔ Yarn version: $(yarn -v)"
 
 # ======== RUBY VIA SYSTEM-WIDE RBENV ========
-echo "[3] Installing Ruby via system-wide rbenv..."
+echo "[4] Installing Ruby via system-wide rbenv..."
 export RBENV_ROOT="$RBENV_DIR"
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 
@@ -96,24 +100,21 @@ fi
 
 eval "$(rbenv init -)"
 
-# Install Ruby only if missing
 if ! rbenv versions | grep -q "$RUBY_VERSION"; then
     echo "[INFO] Installing Ruby $RUBY_VERSION..."
     rbenv install "$RUBY_VERSION"
 else
     echo "[INFO] Ruby $RUBY_VERSION already installed, skipping."
 fi
-
 rbenv global "$RUBY_VERSION"
 
-# Install Bundler if missing
 if ! gem list bundler -i > /dev/null 2>&1; then
     gem install bundler
 fi
 echo "✔ Ruby and Bundler ready"
 
 # ======== POSTGRESQL SETUP ========
-echo "[4] Configuring PostgreSQL..."
+echo "[5] Configuring PostgreSQL..."
 sudo -u postgres HOME=/tmp psql <<EOF
 DO
 \$do\$
@@ -124,14 +125,21 @@ BEGIN
 END
 \$do\$;
 
-CREATE DATABASE $DB_NAME OWNER $DB_USER;
+DO
+\$do\$
+BEGIN
+   IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '$DB_NAME') THEN
+      CREATE DATABASE $DB_NAME OWNER $DB_USER;
+   END IF;
+END
+\$do\$;
 EOF
 echo "✔ PostgreSQL configured"
 
-# ======== BACKUP ========
+# ======== GREENLIGHT BACKUP ========
 mkdir -p "$GREENLIGHT_DIR/backups"
 if [ -d "$GREENLIGHT_DIR" ]; then
-    echo "[5] Backing up Greenlight database and .env before upgrade..."
+    echo "[6] Backing up Greenlight database and .env before upgrade..."
     BACKUP_DIR="$GREENLIGHT_DIR/backups/$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$BACKUP_DIR"
     sudo -u postgres HOME=/tmp pg_dump "$DB_NAME" > "$BACKUP_DIR/${DB_NAME}.sql"
@@ -140,7 +148,7 @@ if [ -d "$GREENLIGHT_DIR" ]; then
 fi
 
 # ======== GREENLIGHT INSTALL / UPGRADE ========
-echo "[6] Installing or upgrading Greenlight..."
+echo "[7] Installing or upgrading Greenlight..."
 cd /var/www
 
 if [ -d "greenlight" ]; then
@@ -167,12 +175,13 @@ sed -i "s/username:.*/username: $DB_USER/" config/database.yml
 sed -i "s/password:.*/password: $DB_PASS/" config/database.yml
 sed -i "s/database:.*/database: $DB_NAME/" config/database.yml
 
+echo "$RUBY_VERSION" > .ruby-version
 export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 eval "$(rbenv init -)"
+rbenv global "$RUBY_VERSION"
 
 bundle install
 yarn install
-
 [ ! -f .env ] && cp .env.example .env
 BBB_ENDPOINT="http://$DOMAIN/bigbluebutton/api"
 BBB_SECRET=$(sudo bbb-conf --secret | awk '/Secret/ {print $2}')
@@ -185,7 +194,7 @@ RAILS_ENV=production bundle exec rake assets:precompile
 echo "✔ Greenlight installed/upgraded"
 
 # ======== NGINX CONFIG ========
-echo "[7] Configuring NGINX..."
+echo "[8] Configuring NGINX..."
 sudo tee /etc/nginx/sites-available/$DOMAIN > /dev/null <<EOF
 server {
     listen 80;
@@ -206,13 +215,13 @@ sudo ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl restart nginx
 
 # ======== SSL ========
-echo "[8] Setting up SSL..."
+echo "[9] Setting up SSL..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
 sed -i "s|http://$DOMAIN|https://$DOMAIN|" .env
-echo "✔ SSL updated"
+echo "✔ SSL configured"
 
 # ======== SYSTEMD SERVICE ========
-echo "[9] Creating systemd service..."
+echo "[10] Creating systemd service..."
 sudo tee /etc/systemd/system/greenlight.service > /dev/null <<EOF
 [Unit]
 Description=Greenlight Rails App
@@ -232,8 +241,6 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable greenlight
-sudo systemctl start greenlight
+sudo systemctl restart greenlight
 
-echo "===== BBB + Greenlight Installation/Upgrade Completed Successfully ====="
-echo "Visit: https://$DOMAIN"
-sudo certbot certificates | grep "Expiry"
+echo "✅ BBB + Greenlight fully installed and running at https://$DOMAIN"
