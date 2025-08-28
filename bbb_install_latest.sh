@@ -6,7 +6,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "===== BBB + Greenlight Installation Started ====="
 
-# ======== USER INPUT WITH DEFAULTS ========
+# ======== USER INPUT ========
 read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
 DOMAIN=${DOMAIN:-bbb.example.com}
 
@@ -32,7 +32,6 @@ apt-get install -y \
   git-core \
   nginx \
   python3-pip \
-  nodejs npm \
   redis-server \
   postgresql postgresql-contrib \
   libpq-dev \
@@ -41,6 +40,23 @@ apt-get install -y \
   zlib1g-dev libssl-dev \
   libreadline-dev libyaml-dev libffi-dev libgdbm-dev libncurses5-dev libgdbm6 \
   libgmp-dev autoconf bison
+
+# ======== NODEJS + YARN ========
+echo "[3] Installing Node.js + Yarn..."
+# Remove conflicting npm
+apt-get remove -y npm || true
+
+# Install Node.js via Nodesource (includes npm)
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# Enable corepack + Yarn
+corepack enable
+npm install -g yarn
+
+node -v
+npm -v
+yarn -v
 
 # ======== CREATE SWAP IF NEEDED ========
 if ! swapon --show | grep -q '/swapfile'; then
@@ -53,7 +69,7 @@ if ! swapon --show | grep -q '/swapfile'; then
 fi
 
 # ======== INSTALL RBENV + RUBY ========
-echo "[3] Installing rbenv + Ruby..."
+echo "[4] Installing rbenv + Ruby..."
 if [ -d "/usr/local/rbenv" ]; then
     rm -rf /usr/local/rbenv
 fi
@@ -80,7 +96,7 @@ ruby -v
 gem -v
 
 # ======== INSTALL BIGBLUEBUTTON ========
-echo "[4] Installing BigBlueButton..."
+echo "[5] Installing BigBlueButton..."
 wget -qO- https://ubuntu.bigbluebutton.org/repo/bigbluebutton.asc | gpg --dearmor -o /usr/share/keyrings/bbb.gpg
 echo "deb [signed-by=/usr/share/keyrings/bbb.gpg] https://ubuntu.bigbluebutton.org/xenial-250 bigbluebutton-xenial main" | tee /etc/apt/sources.list.d/bigbluebutton.list
 apt-get update -y
@@ -89,12 +105,12 @@ apt-get install -y bigbluebutton
 bbb-conf --check
 
 # ======== CONFIGURE SSL ========
-echo "[5] Setting up Let's Encrypt SSL..."
+echo "[6] Setting up Let's Encrypt SSL..."
 apt-get install -y certbot
 certbot certonly --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
 
 # ======== INSTALL GREENLIGHT ========
-echo "[6] Installing Greenlight..."
+echo "[7] Installing Greenlight..."
 cd /var/www/
 if [ -d "greenlight" ]; then
   rm -rf greenlight
@@ -112,7 +128,7 @@ bundle install
 yarn install --check-files
 
 # ======== CONFIGURE GREENLIGHT ========
-echo "[7] Configuring Greenlight..."
+echo "[8] Configuring Greenlight..."
 cp .env.example .env
 SECRET=$(bbb-conf --secret | grep -i "Secret:" | awk '{print $2}')
 API_URL="https://$DOMAIN/bigbluebutton/api"
@@ -125,7 +141,7 @@ bundle exec rake db:setup
 bundle exec rake assets:precompile
 
 # ======== CREATE SYSTEMD SERVICE ========
-echo "[8] Creating Greenlight systemd service..."
+echo "[9] Creating Greenlight systemd service..."
 cat >/etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight
@@ -148,7 +164,7 @@ systemctl enable greenlight
 systemctl restart greenlight
 
 # ======== CONFIGURE NGINX ========
-echo "[9] Configuring Nginx..."
+echo "[10] Configuring Nginx..."
 cat >/etc/nginx/sites-available/greenlight <<EOL
 server {
   listen 80;
@@ -181,14 +197,14 @@ ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 
 # ======== FIREWALL (UFW) ========
-echo "[10] Configuring UFW firewall..."
+echo "[11] Configuring UFW firewall..."
 apt-get install -y ufw
 ufw --force reset
 
 ufw default deny incoming
 ufw default allow outgoing
 
-# Allow SSH (safe login)
+# Allow SSH
 ufw allow OpenSSH
 ufw allow 22/tcp
 
@@ -208,13 +224,13 @@ ufw --force enable
 ufw status verbose
 
 # ======== AUTO SSL RENEW ========
-echo "[11] Enabling auto SSL renew..."
+echo "[12] Enabling auto SSL renew..."
 cat >/etc/cron.d/certbot-renew <<EOL
 0 3 * * * root certbot renew --quiet && systemctl reload nginx
 EOL
 
 # ======== FINAL HEALTH CHECK ========
-echo "[12] Running health checks..."
+echo "[13] Running health checks..."
 
 if systemctl is-active --quiet nginx; then
   echo "[OK] Nginx is running."
