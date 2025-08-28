@@ -99,13 +99,43 @@ EOF
 # ======== INSTALL GREENLIGHT ========
 echo "[6] Installing Greenlight..."
 
+# Create greenlight user first
+useradd -m -s /bin/bash $GREENLIGHT_USER 2>/dev/null || true
+
+# Remove existing directory if it exists but is incomplete
+if [ -d "$GREENLIGHT_DIR" ] && [ ! -f "$GREENLIGHT_DIR/Gemfile" ]; then
+    echo "Removing incomplete Greenlight directory..."
+    rm -rf $GREENLIGHT_DIR
+fi
+
+# Clone Greenlight if directory doesn't exist
 if [ ! -d "$GREENLIGHT_DIR" ]; then
+    echo "Cloning Greenlight repository..."
     git clone https://github.com/bigbluebutton/greenlight.git -b v3 $GREENLIGHT_DIR
-    useradd -m -s /bin/bash $GREENLIGHT_USER || true
+    
+    # Verify clone was successful
+    if [ ! -f "$GREENLIGHT_DIR/Gemfile" ]; then
+        echo "Error: Greenlight clone failed or Gemfile not found!"
+        echo "Directory contents:"
+        ls -la $GREENLIGHT_DIR/
+        exit 1
+    fi
+    
     chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
 fi
 
 cd $GREENLIGHT_DIR
+
+# Verify we're in the right directory with Gemfile
+if [ ! -f "Gemfile" ]; then
+    echo "Error: No Gemfile found in $GREENLIGHT_DIR"
+    echo "Current directory: $(pwd)"
+    echo "Directory contents:"
+    ls -la
+    exit 1
+fi
+
+echo "Found Gemfile, proceeding with installation..."
 
 # Ensure config folder exists
 mkdir -p config
@@ -122,19 +152,41 @@ production:
   host: localhost
 EOL
 
+# Set proper ownership
+chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
+
 # Create a proper rbenv setup script for the greenlight user
 cat > /tmp/setup_greenlight.sh <<EOL
 #!/bin/bash
+set -e
 export RBENV_ROOT=/usr/local/rbenv
 export PATH=\$RBENV_ROOT/bin:\$PATH
 eval "\$(rbenv init -)"
+
 cd $GREENLIGHT_DIR
-bundle install --deployment --without development test
+
+echo "Current directory: \$(pwd)"
+echo "Checking for Gemfile..."
+if [ ! -f "Gemfile" ]; then
+    echo "Error: No Gemfile found!"
+    ls -la
+    exit 1
+fi
+
+echo "Setting up bundle configuration..."
+bundle config set deployment true
+bundle config set without 'development test'
+
+echo "Installing gems..."
+bundle install
+
+echo "Setting up database..."
 RAILS_ENV=production bundle exec rake db:setup
 EOL
 
 chmod +x /tmp/setup_greenlight.sh
 
+echo "Running Greenlight setup as user: $GREENLIGHT_USER"
 # Install gems as greenlight user with proper rbenv environment
 sudo -u $GREENLIGHT_USER -H bash /tmp/setup_greenlight.sh
 
