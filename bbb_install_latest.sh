@@ -63,6 +63,7 @@ if ! rbenv versions | grep -q "3.1.6"; then
 fi
 rbenv global 3.1.6
 gem install bundler
+rbenv rehash
 
 # ======== CONFIGURE POSTGRESQL SAFELY ========
 echo "[5] Configuring PostgreSQL..."
@@ -80,13 +81,9 @@ END \$\$;"
 
 # ======== GREENLIGHT INSTALL / UPGRADE ========
 echo "[6] Installing/upgrading Greenlight..."
-sudo mkdir -p /var/www
-cd /var/www
-if [ ! -d "greenlight" ]; then
-    git clone -b v3 https://github.com/bigbluebutton/greenlight.git
-fi
+sudo mkdir -p $GREENLIGHT_DIR
+cd $GREENLIGHT_DIR
 
-cd greenlight
 if [ ! -d ".git" ]; then
     sudo rm -rf *
     git clone -b v3 https://github.com/bigbluebutton/greenlight.git .
@@ -111,13 +108,22 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Configure environment variables
+# Fetch BBB secret safely
+BBB_CONF="/usr/local/bin/bbb-conf"
+BBB_SECRET=""
+if [ -x "$BBB_CONF" ]; then
+    BBB_SECRET=$($BBB_CONF --secret | awk '/Secret/ {print $2}')
+fi
+
 BBB_ENDPOINT="http://$DOMAIN/bigbluebutton/api"
-BBB_SECRET=$(/usr/bin/bbb-conf --secret | awk '/Secret/ {print $2}') || true
+RAILS_SECRET=$(RAILS_ENV=production bundle exec rake secret || true)
+
+# Update .env safely
 sed -i "s|BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=$BBB_ENDPOINT|" .env || true
 sed -i "s|BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$BBB_SECRET|" .env || true
-sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$(bundle exec rake secret)||" .env || true
+sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$RAILS_SECRET|" .env || true
 
+bundle config set --local path 'vendor/bundle'
 bundle install
 yarn install
 RAILS_ENV=production bundle exec rake db:migrate
@@ -133,9 +139,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/var/www/greenlight
+WorkingDirectory=$GREENLIGHT_DIR
 Environment=RAILS_ENV=production
-ExecStart=/usr/local/rbenv/shims/bundle exec puma -C config/puma.rb
+ExecStart=$RBENV_ROOT/shims/bundle exec puma -C config/puma.rb
 Restart=always
 RestartSec=10
 
@@ -154,7 +160,7 @@ server {
     listen 80;
     server_name $DOMAIN;
 
-    root /var/www/greenlight/public;
+    root $GREENLIGHT_DIR/public;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
