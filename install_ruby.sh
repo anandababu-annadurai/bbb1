@@ -10,7 +10,7 @@ fi
 LOG_FILE="/var/log/ruby_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== Installing Ruby 3.1 via rbenv (Prebuilt Tarballs) ====="
+echo "===== Installing Ruby 3.1 via rbenv (Prebuilt Tarballs, No PPA) ====="
 
 # -----------------------------
 # 1. Update system
@@ -29,8 +29,8 @@ apt-get install -y curl git build-essential libssl-dev zlib1g-dev \
 # 3. Install rbenv + ruby-build
 # -----------------------------
 if [ -d "/usr/local/rbenv" ]; then
-  echo "[INFO] Removing existing rbenv..."
-  rm -rf /usr/local/rbenv
+    echo "[INFO] Removing existing rbenv..."
+    rm -rf /usr/local/rbenv
 fi
 
 git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv
@@ -43,7 +43,7 @@ export PATH="$RBENV_ROOT/bin:$RBENV_ROOT/shims:$PATH"
 eval "$(rbenv init -)"
 
 # -----------------------------
-# 4. Install Ruby (prebuilt tarballs)
+# 4. Install Ruby versions (prebuilt tarballs)
 # -----------------------------
 export RUBY_BUILD_MIRROR_URL="https://cache.ruby-lang.org/pub/ruby"
 
