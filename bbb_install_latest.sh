@@ -4,132 +4,146 @@ set -e
 LOG_FILE="/var/log/bbb_full_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== BBB + Greenlight Full Installation Started ====="
+echo "===== BBB + Greenlight Installation Started ====="
 
-# ======== USER INPUT WITH DEFAULTS ========
+# ===============================
+# User Input
+# ===============================
 read -p "Enter your domain name (e.g., bbb.example.com) [bbb.example.com]: " DOMAIN
 DOMAIN=${DOMAIN:-bbb.example.com}
 
-read -p "Enter your email address (for Let's Encrypt SSL) [admin@$DOMAIN]: " EMAIL
+read -p "Enter your email address for SSL [admin@$DOMAIN]: " EMAIL
 EMAIL=${EMAIL:-admin@$DOMAIN}
 
-read -sp "Enter password for Greenlight DB user [greenlightpass]: " GREENLIGHT_DB_PASS
-GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlightpass}
+read -sp "Enter password for Greenlight DB user [greenlight_pass]: " GREENLIGHT_DB_PASS
+GREENLIGHT_DB_PASS=${GREENLIGHT_DB_PASS:-greenlight_pass}
 echo
 
+# ===============================
+# Non-root user for Greenlight
+# ===============================
+GREENLIGHT_USER=greenlight
 GREENLIGHT_DIR="/var/www/greenlight"
 
-# ======== FIREWALL SETUP ========
-echo "[0] Configuring firewall (allow SSH)..."
+if ! id -u $GREENLIGHT_USER >/dev/null 2>&1; then
+    sudo useradd -m -s /bin/bash $GREENLIGHT_USER
+fi
+
+sudo mkdir -p $GREENLIGHT_DIR
+sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
+
+# ===============================
+# System Update & Dependencies
+# ===============================
+echo "[1] Updating system and installing dependencies..."
+sudo apt update -y && sudo apt upgrade -y
+sudo apt install -y software-properties-common curl git gnupg2 build-essential \
+ zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
+ postgresql postgresql-contrib redis-server nginx unzip zip nodejs npm yarn
+
+# ===============================
+# Firewall
+# ===============================
+echo "[2] Configuring firewall..."
 sudo ufw --force reset
 sudo ufw allow ssh
 sudo ufw allow 22/tcp
-sudo ufw --force enable
+sudo ufw enable
 
-# ======== SYSTEM UPDATE ========
-echo "[1] Updating system packages..."
-sudo apt update -y && sudo apt upgrade -y
-sudo apt install -y software-properties-common curl git gnupg2 build-essential \
-    zlib1g-dev lsb-release ufw libssl-dev libreadline-dev libyaml-dev libffi-dev libgdbm-dev \
-    libpq-dev postgresql postgresql-contrib nginx unzip zip
+# ===============================
+# Hostname
+# ===============================
+sudo hostnamectl set-hostname $DOMAIN
+grep -q "$DOMAIN" /etc/hosts || echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
 
-# ======== HOSTNAME ========
-echo "[2] Setting hostname..."
-sudo hostnamectl set-hostname "$DOMAIN"
-if ! grep -q "$DOMAIN" /etc/hosts; then
-    echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts
-fi
-
-# ======== INSTALL BIGBLUEBUTTON ========
+# ===============================
+# BigBlueButton Installation
+# ===============================
 echo "[3] Installing BigBlueButton..."
-wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s "$DOMAIN" -e "$EMAIL" -g
+wget -qO- https://ubuntu.bigbluebutton.org/bbb-install.sh | sudo bash -s -- -v jammy-27 -s $DOMAIN -e $EMAIL -g
 
-# ======== INSTALL NODE & YARN ========
-echo "[4] Installing Node.js 20.x and Yarn..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-npm -v
-yarn -v || sudo npm install -g yarn
-
-# ======== INSTALL SYSTEM-WIDE RBENV & RUBY ========
-RUBY_VERSION="3.1.6"
-RBENV_ROOT="/usr/local/rbenv"
-
+# ===============================
+# rbenv & Ruby Setup (per-user)
+# ===============================
+echo "[4] Setting up rbenv and Ruby 3.1.6..."
+sudo -u $GREENLIGHT_USER -i bash <<'EOF'
+RBENV_ROOT="$HOME/.rbenv"
 if [ ! -d "$RBENV_ROOT" ]; then
-    echo "[5] Installing system-wide rbenv..."
-    sudo git clone https://github.com/rbenv/rbenv.git "$RBENV_ROOT"
-    sudo mkdir -p "$RBENV_ROOT/plugins"
-    sudo git clone https://github.com/rbenv/ruby-build.git "$RBENV_ROOT/plugins/ruby-build"
-    sudo chown -R $(whoami):$(whoami) "$RBENV_ROOT"
+    git clone https://github.com/rbenv/rbenv.git $RBENV_ROOT
+    cd $RBENV_ROOT && src/configure && make -C src
+    mkdir -p $RBENV_ROOT/plugins
+    git clone https://github.com/rbenv/ruby-build.git $RBENV_ROOT/plugins/ruby-build
 fi
 export RBENV_ROOT="$RBENV_ROOT"
 export PATH="$RBENV_ROOT/bin:$PATH"
 eval "$(rbenv init -)"
-
-# Install Ruby only if missing
-if ! rbenv versions | grep -q "$RUBY_VERSION"; then
-    echo "[6] Installing Ruby $RUBY_VERSION..."
-    rbenv install -s "$RUBY_VERSION"
+RUBY_VERSION="3.1.6"
+if ! rbenv versions | grep -q $RUBY_VERSION; then
+    rbenv install $RUBY_VERSION
 fi
-rbenv global "$RUBY_VERSION"
-gem install bundler
+rbenv global $RUBY_VERSION
+gem install bundler --no-document
+EOF
 
-# ======== CONFIGURE POSTGRESQL ========
-echo "[7] Configuring PostgreSQL..."
-sudo -u postgres psql -c "CREATE ROLE greenlight_user WITH PASSWORD '$GREENLIGHT_DB_PASS';" || true
-sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || true
+# ===============================
+# PostgreSQL Setup
+# ===============================
+echo "[5] Configuring PostgreSQL..."
+sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='greenlight_user') THEN CREATE ROLE greenlight_user LOGIN PASSWORD '$GREENLIGHT_DB_PASS'; END IF; END\$\$;"
+sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight_user;" || echo "[INFO] Database already exists"
 
-# ======== INSTALL OR UPDATE GREENLIGHT ========
-echo "[8] Installing/Updating Greenlight..."
-mkdir -p /var/www
-cd /var/www
-
-if [ -d "$GREENLIGHT_DIR/.git" ]; then
-    cd "$GREENLIGHT_DIR"
-    git fetch --all
-    git checkout v3
-    git reset --hard origin/v3
-else
-    rm -rf "$GREENLIGHT_DIR"
-    git clone https://github.com/bigbluebutton/greenlight.git "$GREENLIGHT_DIR"
-    cd "$GREENLIGHT_DIR"
-    git checkout v3
+# ===============================
+# Greenlight Installation/Upgrade
+# ===============================
+echo "[6] Installing or updating Greenlight..."
+sudo -u $GREENLIGHT_USER -i bash <<'EOF'
+GREENLIGHT_DIR="$HOME/greenlight"
+cd $HOME
+if [ ! -d "$GREENLIGHT_DIR/.git" ]; then
+    git clone https://github.com/bigbluebutton/greenlight.git greenlight
 fi
+cd $GREENLIGHT_DIR
+git fetch
+git checkout v3
+git reset --hard origin/v3
 
-# Set correct Ruby version
-echo "$RUBY_VERSION" > .ruby-version
-rbenv local "$RUBY_VERSION"
+# Ensure correct Ruby version
+echo "3.1.6" > .ruby-version
 eval "$(rbenv init -)"
+rbenv local 3.1.6
 
-# Setup database.yml
-if [ ! -f "config/database.yml" ] && [ -f "config/database.yml.example" ]; then
-    cp config/database.yml.example config/database.yml
-    sed -i "s/username:.*/username: greenlight_user/" config/database.yml
-    sed -i "s/password:.*/password: $GREENLIGHT_DB_PASS/" config/database.yml
-fi
-
+# Install Gems
+bundle config set --local path 'vendor/bundle'
 bundle install
-yarn install || echo "[WARN] Yarn warnings ignored"
 
-# ======== PRECOMPILE ASSETS & SETUP DB ========
-echo "[9] Precompiling assets and configuring DB..."
-export RAILS_ENV=production
-bundle exec rake assets:precompile
-bundle exec rake db:create db:migrate db:seed
+# Yarn install
+yarn install --check-files
 
-# ======== PUMA SYSTEMD SERVICE ========
-echo "[10] Creating systemd service for Puma..."
-cat > /etc/systemd/system/greenlight.service <<EOL
+# Create default .env if missing
+[ ! -f .env ] && cp .env.example .env 2>/dev/null || touch .env
+
+# Fix logger nil issue in production.rb
+sed -i "s/logger.formatter = config.log_formatter/if logger; logger.formatter = config.log_formatter; end/" config/environments/production.rb
+
+RAILS_ENV=production bundle exec rake db:create db:migrate db:seed
+RAILS_ENV=production bundle exec rake assets:precompile
+EOF
+
+# ===============================
+# Systemd Service
+# ===============================
+echo "[7] Creating systemd service for Greenlight..."
+sudo tee /etc/systemd/system/greenlight.service >/dev/null <<EOL
 [Unit]
 Description=Greenlight Puma Server
 After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/var/www/greenlight
+User=$GREENLIGHT_USER
+WorkingDirectory=$GREENLIGHT_DIR
 Environment=RAILS_ENV=production
-ExecStart=$RBENV_ROOT/shims/bundle exec puma -C config/puma.rb
+ExecStart=$GREENLIGHT_DIR/.rbenv/shims/bundle exec puma -C config/puma.rb
 Restart=always
 RestartSec=10
 
@@ -137,18 +151,20 @@ RestartSec=10
 WantedBy=multi-user.target
 EOL
 
-systemctl daemon-reload
-systemctl enable greenlight
-systemctl restart greenlight
+sudo systemctl daemon-reload
+sudo systemctl enable greenlight
+sudo systemctl restart greenlight
 
-# ======== NGINX + SSL ========
-echo "[11] Configuring Nginx for $DOMAIN..."
-cat > /etc/nginx/sites-available/greenlight <<EOL
+# ===============================
+# Nginx + SSL
+# ===============================
+echo "[8] Configuring Nginx for $DOMAIN..."
+sudo tee /etc/nginx/sites-available/greenlight >/dev/null <<EOL
 server {
     listen 80;
     server_name $DOMAIN;
 
-    root /var/www/greenlight/public;
+    root $GREENLIGHT_DIR/public;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -159,10 +175,11 @@ server {
 }
 EOL
 
-ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
-nginx -t && systemctl restart nginx
+sudo ln -sf /etc/nginx/sites-available/greenlight /etc/nginx/sites-enabled/greenlight
+sudo nginx -t && sudo systemctl restart nginx
 
-echo "[12] Requesting SSL certificate..."
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL"
+# SSL
+echo "[9] Issuing SSL certificate..."
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-echo "✅ BigBlueButton + Greenlight installed and secured with HTTPS at https://$DOMAIN"
+echo "✅ Greenlight installed and secured with HTTPS at https://$DOMAIN"
