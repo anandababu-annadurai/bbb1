@@ -14,105 +14,97 @@ GREENLIGHT_USER="greenlight"
 GREENLIGHT_DB_PASS="$DB_PASS"
 GREENLIGHT_DIR="/var/www/greenlight"
 
-# ======== CHECK DEPENDENCIES ========
-echo "[1] Installing basic dependencies..."
-sudo apt update
-sudo apt install -y curl gnupg2 build-essential git \
-    libssl-dev libreadline-dev zlib1g-dev \
-    postgresql postgresql-contrib nginx wget
+# ======== UPDATE SYSTEM ========
+echo "[1] Updating system packages..."
+sudo apt update -y
+sudo apt upgrade -y
 
-# ======== INSTALL NODE + YARN (skip if present) ========
-echo "[2] Installing Node.js + Yarn..."
-if ! command -v node >/dev/null 2>&1; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+# ======== INSTALL DEPENDENCIES ========
+echo "[2] Installing dependencies..."
+sudo apt install -y curl gnupg build-essential git \
+  libssl-dev libreadline-dev zlib1g-dev \
+  libpq-dev postgresql postgresql-contrib \
+  nginx software-properties-common ufw
+
+# ======== CHECK/INSTALL NODE ========
+if command -v node >/dev/null 2>&1; then
+    echo "[3] Node.js already installed: $(node -v)"
+else
+    echo "[3] Installing Node.js 20..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
     sudo apt install -y nodejs
 fi
 
-if ! command -v yarn >/dev/null 2>&1; then
+if command -v yarn >/dev/null 2>&1; then
+    echo "[3] Yarn already installed: $(yarn -v)"
+else
+    echo "[3] Installing Yarn..."
     sudo npm install -g yarn
 fi
 
-node -v
-npm -v
-yarn -v || echo "Yarn may require fixing manually"
+# ======== INSTALL rbenv + RUBY ========
+if command -v ruby >/dev/null 2>&1 && [[ "$(ruby -v)" == *"3.1.6"* ]]; then
+    echo "[4] Ruby 3.1.6 already installed: $(ruby -v)"
+else
+    echo "[4] Installing rbenv + Ruby 3.1.6..."
+    # Install rbenv
+    if [ ! -d "$HOME/.rbenv" ]; then
+        git clone https://github.com/rbenv/rbenv.git ~/.rbenv
+        git clone https://github.com/rbenv/ruby-build.git ~/.rbenv/plugins/ruby-build
+        echo 'export PATH="$HOME/.rbenv/bin:$PATH"' >> ~/.bashrc
+        echo 'eval "$(rbenv init -)"' >> ~/.bashrc
+        export PATH="$HOME/.rbenv/bin:$PATH"
+        eval "$(rbenv init -)"
+    fi
 
-# ======== INSTALL RBENV + RUBY (skip if present) ========
-echo "[3] Installing rbenv + Ruby 3.1.6..."
-if ! command -v ruby >/dev/null 2>&1 || [[ "$(ruby -v)" != *"3.1.6"* ]]; then
-    git clone https://github.com/rbenv/rbenv.git ~/.rbenv
-    git clone https://github.com/rbenv/ruby-build.git ~/.rbenv/plugins/ruby-build
-    export PATH="$HOME/.rbenv/bin:$PATH"
-    eval "$(~/.rbenv/bin/rbenv init -)"
-    ~/.rbenv/bin/rbenv install -s 3.1.6
-    ~/.rbenv/bin/rbenv global 3.1.6
+    rbenv install -s 3.1.6
+    rbenv global 3.1.6
+    gem install bundler --no-document
+    rbenv rehash
 fi
 
-ruby -v
-gem install bundler --no-document
-bundle -v
+# ======== CONFIGURE BBB REPO FOR FOCAL ========
+echo "[5] Adding BigBlueButton repository..."
+sudo rm -f /usr/share/keyrings/bbb.gpg
+curl -fsSL https://ubuntu.bigbluebutton.org/repo/bbb.gpg | sudo gpg --dearmor -o /usr/share/keyrings/bbb.gpg
+echo "deb [signed-by=/usr/share/keyrings/bbb.gpg] https://ubuntu.bigbluebutton.org/focal-260 bigbluebutton-focal main" | \
+    sudo tee /etc/apt/sources.list.d/bbb.list
+sudo apt update
+
+# ======== INSTALL BBB ========
+echo "[6] Installing BigBlueButton..."
+sudo apt install -y bigbluebutton
 
 # ======== CONFIGURE POSTGRESQL ========
-echo "[4] Configuring PostgreSQL for Greenlight..."
+echo "[7] Configuring PostgreSQL..."
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
 
-# Create greenlight role if not exists
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname = '$GREENLIGHT_USER'" | grep -q 1 || \
-sudo -u postgres psql -c "CREATE ROLE $GREENLIGHT_USER LOGIN PASSWORD '$GREENLIGHT_DB_PASS';"
-
-# Create greenlight database if not exists
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = 'greenlight_production'" | grep -q 1 || \
-sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER $GREENLIGHT_USER;"
+sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$GREENLIGHT_USER') THEN CREATE ROLE $GREENLIGHT_USER LOGIN PASSWORD '$GREENLIGHT_DB_PASS'; END IF; END \$\$;"
+sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'greenlight_production') THEN CREATE DATABASE greenlight_production OWNER $GREENLIGHT_USER; END IF; END \$\$;"
 
 # ======== INSTALL GREENLIGHT ========
-echo "[5] Installing Greenlight..."
+echo "[8] Installing Greenlight..."
 if [ ! -d "$GREENLIGHT_DIR" ]; then
-    sudo git clone https://github.com/bigbluebutton/greenlight.git -b v3 $GREENLIGHT_DIR
-    sudo chown -R $USER:$USER $GREENLIGHT_DIR
+    sudo git clone -b v3 https://github.com/bigbluebutton/greenlight.git $GREENLIGHT_DIR
+    sudo chown -R $GREENLIGHT_USER:$GREENLIGHT_USER $GREENLIGHT_DIR
 fi
 
 cd $GREENLIGHT_DIR
-
-# Configure database.yml
-mkdir -p config
-cat > config/database.yml <<EOL
-production:
-  adapter: postgresql
-  encoding: unicode
-  database: greenlight_production
-  pool: 5
-  username: $GREENLIGHT_USER
-  password: $GREENLIGHT_DB_PASS
-  host: localhost
-EOL
-
+sudo -u $GREENLIGHT_USER bash -c "
+export PATH=\"$HOME/.rbenv/shims:\$PATH\"
 bundle install
-RAILS_ENV=production bundle exec rake db:setup
+bundle exec rake db:setup RAILS_ENV=production
+"
 
-# ======== CONFIGURE BBB REPO ========
-echo "[6] Configuring BigBlueButton repository..."
-BBB_KEY=/usr/share/keyrings/bbb.gpg
-sudo rm -f $BBB_KEY
-curl -fsSL https://ubuntu.bigbluebutton.org/repo/bbb.gpg | sudo gpg --dearmor -o $BBB_KEY
+# ======== CONFIGURE NGINX + SSL ========
+echo "[9] Configuring Nginx and SSL..."
+sudo ufw allow 'OpenSSH'
+sudo ufw allow 80
+sudo ufw allow 443
+sudo ufw --force enable
 
-echo "deb [signed-by=$BBB_KEY] https://ubuntu.bigbluebutton.org/focal-260 bigbluebutton-focal main" | \
-    sudo tee /etc/apt/sources.list.d/bbb.list
-
-sudo apt update -y
-
-# ======== CREATE .ENV FOR GREENLIGHT ========
-echo "[7] Creating Greenlight .env file..."
-cat > $GREENLIGHT_DIR/.env <<EOL
-RAILS_ENV=production
-DATABASE_URL=postgresql://$GREENLIGHT_USER:$GREENLIGHT_DB_PASS@localhost/greenlight_production
-SECRET_KEY_BASE=$(openssl rand -hex 64)
-BIGBLUEBUTTON_ENDPOINT=https://$DOMAIN/bigbluebutton/api/
-BIGBLUEBUTTON_SECRET=your_bbb_secret_here
-DEFAULT_REGISTRATION=open
-ALLOW_GREENLIGHT_ACCOUNTS=true
-EOL
-
-# ======== CONFIGURE NGINX ========
-echo "[8] Configuring Nginx..."
-cat > /etc/nginx/sites-available/greenlight <<EOL
+sudo tee /etc/nginx/sites-available/greenlight <<EOL
 server {
     listen 80;
     server_name $DOMAIN;
@@ -137,9 +129,13 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl restart nginx
 
+# Install Certbot for Let's Encrypt
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN
+
 # ======== CREATE SYSTEMD SERVICE ========
-echo "[9] Creating Greenlight systemd service..."
-cat > /etc/systemd/system/greenlight.service <<EOL
+echo "[10] Creating Greenlight systemd service..."
+sudo tee /etc/systemd/system/greenlight.service <<EOL
 [Unit]
 Description=Greenlight
 After=network.target postgresql.service
@@ -147,9 +143,11 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-User=$USER
+User=$GREENLIGHT_USER
+Group=$GREENLIGHT_USER
 WorkingDirectory=$GREENLIGHT_DIR
 Environment=RAILS_ENV=production
+Environment=PATH=$HOME/.rbenv/bin:$HOME/.rbenv/shims:/usr/local/bin:/usr/bin:/bin
 ExecStart=$HOME/.rbenv/shims/bundle exec rails server -b 0.0.0.0 -p 3000
 Restart=always
 RestartSec=10
@@ -162,6 +160,5 @@ sudo systemctl daemon-reload
 sudo systemctl enable greenlight
 sudo systemctl start greenlight
 
-echo "===== BBB + Greenlight Installation Completed ====="
-echo "Access Greenlight: http://$DOMAIN"
-echo "Check status: systemctl status greenlight"
+echo "===== Installation Completed Successfully ====="
+echo "Greenlight available at: https://$DOMAIN"
