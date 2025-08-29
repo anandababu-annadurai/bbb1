@@ -1,0 +1,1 @@
+wget -qO- https://raw.githubusercontent.com/bigbluebutton/bbb-install/v2.7.x-release/bbb-install.sh | bash -s -- -v focal-260 -s bbb.tes.com -e your-email@example.com -g
