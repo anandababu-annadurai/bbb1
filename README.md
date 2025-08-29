@@ -44,6 +44,14 @@ sudo bash greenlight_install.sh --clean --domain yourdomain.com
 sudo chmod +x install_ruby.sh
 sudo ./install_ruby.sh → Ruby installed and verified
 
+echo 'export PATH="$HOME/.rbenv/bin:$PATH"' >> ~/.bashrc
+echo 'eval "$(rbenv init -)"' >> ~/.bashrc
+
+Reload:
+source ~/.bashrc
+
+
+
 sudo chmod +x install_node.sh
 sudo ./install_node.sh → Node.js + Yarn installed
 
