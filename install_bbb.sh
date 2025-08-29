@@ -1,84 +1,108 @@
 #!/bin/bash
 set -e
 
-LOG_FILE="/var/log/bbb_install.log"
+LOG_FILE="/var/log/bbb_full_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo "===== Optimized BBB + Greenlight Installation Started ====="
+echo "===== BBB + Greenlight Installation Started ====="
 
-# ===== User Inputs =====
+# ======== USER INPUT ========
 read -p "Enter your domain name (e.g., bbb.example.com): " DOMAIN
-read -p "Enter your email for SSL notifications: " EMAIL
+read -sp "Enter PostgreSQL DB password for Greenlight: " PG_PASSWORD
+echo
 
-# ===== Check Ruby =====
-if command -v ruby >/dev/null 2>&1; then
-    echo "[INFO] Ruby is already installed: $(ruby -v)"
-else
-    echo "[INFO] Installing Ruby 3.1 via rbenv..."
-    # Install rbenv and Ruby 3.1
-    git clone https://github.com/rbenv/rbenv.git ~/.rbenv
-    cd ~/.rbenv && src/configure && make -C src
-    echo 'export PATH="$HOME/.rbenv/bin:$PATH"' >> ~/.bashrc
-    echo 'eval "$(rbenv init - bash)"' >> ~/.bashrc
-    export PATH="$HOME/.rbenv/bin:$PATH"
-    eval "$(rbenv init - bash)"
-    git clone https://github.com/rbenv/ruby-build.git ~/.rbenv/plugins/ruby-build
-    rbenv install -s 3.1.6
-    rbenv global 3.1.6
+# ======== VERIFY RUBY ========
+if ! command -v ruby >/dev/null 2>&1; then
+    echo "[ERROR] Ruby not found. Please install Ruby 3.1.6 via rbenv first."
+    exit 1
+fi
+echo "[INFO] Ruby version: $(ruby -v)"
+
+if ! command -v bundle >/dev/null 2>&1; then
+    echo "[INFO] Installing Bundler..."
     gem install bundler --no-document
-    echo "[INFO] Ruby 3.1.6 + Bundler installed."
 fi
+echo "[INFO] Bundler version: $(bundle -v)"
 
-# ===== Check Node =====
-if command -v node >/dev/null 2>&1; then
-    echo "[INFO] Node.js already installed: $(node -v)"
-else
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+# ======== VERIFY NODE & NPM ========
+if ! command -v node >/dev/null 2>&1; then
+    echo "[ERROR] Node.js not found. Please install Node.js 20.x."
+    exit 1
 fi
+echo "[INFO] Node.js version: $(node -v)"
 
-# ===== Check npm =====
-if command -v npm >/dev/null 2>&1; then
-    echo "[INFO] npm already installed: $(npm -v)"
-else
-    sudo apt-get install -y npm
+if ! command -v npm >/dev/null 2>&1; then
+    echo "[ERROR] npm not found. Please install npm."
+    exit 1
 fi
+echo "[INFO] npm version: $(npm -v)"
 
-# ===== Check Yarn =====
-if command -v yarn >/dev/null 2>&1; then
-    echo "[INFO] Yarn already installed: $(yarn -v || echo 'Please fix Yarn manually')"
-else
+# ======== VERIFY YARN ========
+if ! command -v yarn >/dev/null 2>&1; then
+    echo "[INFO] Installing Yarn..."
     sudo npm install -g yarn --force
 fi
+echo "[INFO] Yarn version: $(yarn -v || echo 'Yarn not found')"
 
-# ===== Update System =====
+# ======== UPDATE SYSTEM ========
+echo "[1] Updating system packages..."
 sudo apt-get update -y
 sudo apt-get upgrade -y
+sudo apt-get install -y curl gnupg2 software-properties-common build-essential ufw
 
-# ===== Remove old BBB repos =====
-sudo rm -f /etc/apt/sources.list.d/bbb.list
-sudo rm -f /etc/apt/sources.list.d/bigbluebutton-focal.list
-
-# ===== Add BBB Focal repo and GPG =====
+# ======== CONFIGURE BBB REPO WITH FIXED GPG ========
+echo "[2] Configuring BigBlueButton focal-260 repo..."
+sudo rm -f /etc/apt/sources.list.d/bbb.list /etc/apt/sources.list.d/bigbluebutton-focal.list
 sudo mkdir -p /usr/share/keyrings
-curl -fsSL https://ubuntu.bigbluebutton.org/repo/bbb.gpg | sudo tee /usr/share/keyrings/bbb.gpg > /dev/null || {
-    echo "[WARN] Could not download GPG key. Using --allow-unauthenticated for apt."
-}
+
+BBB_GPG_URL="https://ubuntu.bigbluebutton.org/focal-260/archive-key.asc"
+sudo curl -fsSL $BBB_GPG_URL | sudo tee /usr/share/keyrings/bbb.gpg > /dev/null
 
 echo "deb [signed-by=/usr/share/keyrings/bbb.gpg] https://ubuntu.bigbluebutton.org/focal-260 bigbluebutton-focal main" | sudo tee /etc/apt/sources.list.d/bigbluebutton-focal.list
 
-sudo apt-get update -y || echo "[WARN] GPG error ignored. Proceeding with installation."
+sudo apt-get update -y || echo "[WARNING] BBB repo signature may fail, continuing..."
 
-# ===== BBB + Greenlight Install via Official Script =====
-wget -qO- https://raw.githubusercontent.com/bigbluebutton/bbb-install/v2.7.x-release/bbb-install.sh | \
-bash -s -- -v focal-260 -s "$DOMAIN" -e "$EMAIL" -g
+# ======== INSTALL BIGBLUEBUTTON ========
+echo "[3] Installing BigBlueButton..."
+sudo apt-get install -y bigbluebutton
 
-# ===== Firewall Check =====
-echo "[INFO] Opening ports for BBB (80, 443) and SSH (22)"
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 22/tcp
-sudo ufw reload
+# ======== POSTGRESQL SETUP ========
+echo "[4] Configuring PostgreSQL for Greenlight..."
+sudo apt-get install -y postgresql postgresql-contrib
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+
+# Create Greenlight DB and user
+sudo -u postgres psql -c "CREATE USER greenlight WITH PASSWORD '$PG_PASSWORD';" || echo "[INFO] User may already exist"
+sudo -u postgres psql -c "CREATE DATABASE greenlight_production OWNER greenlight;" || echo "[INFO] DB may already exist"
+
+# ======== FIREWALL CONFIG ========
+echo "[5] Configuring UFW Firewall..."
+sudo ufw allow 22
+sudo ufw allow 80
+sudo ufw allow 443
+sudo ufw --force enable
+
+# ======== GREENLIGHT INSTALL ========
+echo "[6] Installing Greenlight..."
+sudo apt-get install -y nginx
+git clone https://github.com/bigbluebutton/greenlight.git /var/www/greenlight
+cd /var/www/greenlight
+bundle install
+yarn install --check-files
+
+# Configure Greenlight environment
+cp .env.example .env
+sed -i "s/DOMAIN=.*/DOMAIN=$DOMAIN/" .env
+sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$PG_PASSWORD/" .env
+
+bundle exec rake db:create
+bundle exec rake db:migrate
+
+# ======== SSL SETUP ========
+echo "[7] Configuring SSL using Let's Encrypt..."
+sudo apt-get install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m your-email@example.com
 
 echo "===== BBB + Greenlight Installation Completed Successfully ====="
-echo "Visit https://$DOMAIN to access your server."
+echo "Visit https://$DOMAIN to access Greenlight"
